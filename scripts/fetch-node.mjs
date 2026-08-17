@@ -63,8 +63,12 @@ rmSync(finalDir, { recursive: true, force: true });
 
 console.log(`[fetch-node] extracting ${archivePath}`);
 if (ext === "zip") {
-  // Windows ships bsdtar which handles zip.
-  execFileSync("tar", ["-xf", archivePath, "-C", out], { stdio: "inherit" });
+  // Windows ships bsdtar which handles zip. Forward slashes and --force-local
+  // stop `D:\…` from being parsed as a remote host (`Cannot connect to D:`).
+  const flat = (p) => p.replace(/\\/g, "/");
+  execFileSync("tar", ["--force-local", "-xf", flat(archivePath), "-C", flat(out)], {
+    stdio: "inherit",
+  });
 } else {
   execFileSync("tar", ["-xzf", archivePath, "-C", out], { stdio: "inherit" });
 }
