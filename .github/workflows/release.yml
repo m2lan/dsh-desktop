@@ -95,20 +95,32 @@ jobs:
         with:
           path: artifacts
 
+      - name: Debug: show downloaded artifacts
+        shell: bash
+        run: |
+          echo "=== files under artifacts/ ==="
+          find artifacts -type f | sort
+
       - name: Create (or reuse) the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "release $TAG already exists, reusing it"
+            if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq '.isDraft')" = "true" ]; then
+              echo "existing release is a draft, publishing it"
+              gh release edit "$TAG" --repo "$REPO" --draft=false
+            fi
           else
             gh release create "$TAG" \
-              --draft \
+              --repo "$REPO" \
               --title "dsh-desktop $TAG" \
               --notes "Kernel: @deepseek-ai/dsh@${{ steps.kernel.outputs.version }}"
-            echo "created draft release $TAG"
+            echo "created release $TAG"
           fi
 
       - name: Upload all platform artifacts to the release
@@ -116,22 +128,41 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+
           # Upload only installer archives, NOT the files inside macOS .app
           # directories (hundreds of tiny files — uploading them one-by-one
           # took 20+ minutes). Installers live at:
           #   bundle/nsis/*.exe, bundle/msi/*.msi, bundle/dmg/*.dmg,
           #   bundle/deb/*.deb, bundle/rpm/*.rpm, bundle/appimage/*.AppImage
-          count=0
-          find artifacts -type f \
+          files=()
+          while IFS= read -r -d '' f; do
+            files+=("$f")
+          done < <(find artifacts -type f \
             \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \
                -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
                -o -name '*.tar.gz' \) \
-            -not -path '*/.app/*' \
-          | while read -r f; do
-              echo "uploading: $f"
-              gh release upload "$TAG" "$f" --clobber || echo "FAILED: $f"
-              count=$((count + 1))
-            done
+            -not -path '*/.app/*' -print0)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No installer files matched under artifacts/ — nothing to upload." >&2
+            exit 1
+          fi
+
+          echo "matched ${#files[@]} installer(s) to upload"
+          for f in "${files[@]}"; do
+            echo "uploading: $f"
+            gh release upload "$TAG" "$f" --clobber --repo "$REPO"
+          done
+
           echo "--- release assets ---"
-          gh release view "$TAG" --json assets --jq '.assets[].name'
+          gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name'
+
+          asset_count=$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets | length')
+          echo "total uploaded assets on release: $asset_count"
+          if [ "$asset_count" -eq 0 ]; then
+            echo "::error::Release $TAG has no uploaded assets after the upload step." >&2
+            exit 1
+          fi
