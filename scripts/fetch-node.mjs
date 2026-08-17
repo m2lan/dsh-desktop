@@ -63,12 +63,10 @@ rmSync(finalDir, { recursive: true, force: true });
 
 console.log(`[fetch-node] extracting ${archivePath}`);
 if (ext === "zip") {
-  // Windows ships bsdtar which handles zip. Forward slashes and --force-local
-  // stop `D:\…` from being parsed as a remote host (`Cannot connect to D:`).
-  const flat = (p) => p.replace(/\\/g, "/");
-  execFileSync("tar", ["--force-local", "-xf", flat(archivePath), "-C", flat(out)], {
-    stdio: "inherit",
-  });
+  // GNU tar on GitHub Windows runners cannot read zip ("This does not look
+  // like a tar archive"). Use PowerShell's native Expand-Archive instead.
+  const ps = `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${out}' -Force`;
+  execFileSync("powershell", ["-NoProfile", "-Command", ps], { stdio: "inherit" });
 } else {
   execFileSync("tar", ["-xzf", archivePath, "-C", out], { stdio: "inherit" });
 }
