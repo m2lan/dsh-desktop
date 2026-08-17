@@ -61,7 +61,7 @@ node scripts/gen-icons.mjs
 npm install
 
 # 3. 准备便携 Node 运行时（壳默认用系统 node 也能开发，但打包需要）
-node scripts/fetch-node.mjs --out runtime-staging --version $(node -e "console.log(require('./scripts/node-version.json').version)")
+node scripts/fetch-node.mjs --out src-tauri/node-runtime --version $(node -e "console.log(require('./scripts/node-version.json').version)")
 
 # 4. 安装 dsh 内核到用户数据目录（也可直接启动后点「应用更新」）
 node scripts/fetch-dsh.mjs --dir "$APPDATA/com.dsh.desktop/kernel" --version latest
@@ -80,7 +80,7 @@ npx tauri signer generate -w ~/.tauri/dsh-desktop.key
 # 把公钥填进 src-tauri/tauri.conf.json 的 plugins.updater.pubkey
 # 把私钥与密码配置为仓库 secrets：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
-# 构建安装包（会带上 runtime-staging 里的便携 Node）
+# 构建安装包（会带上 src-tauri/node-runtime 里的便携 Node）
 npm run build
 ```
 

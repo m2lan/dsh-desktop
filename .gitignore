@@ -8,6 +8,7 @@ src-tauri/gen/
 
 # Runtime staging (portable node fetched by CI)
 runtime-staging/
+src-tauri/node-runtime/
 
 # OS
 .DS_Store

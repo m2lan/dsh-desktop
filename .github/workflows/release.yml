@@ -44,7 +44,19 @@ jobs:
 
       - name: Fetch portable Node runtime
         shell: bash
-        run: node scripts/fetch-node.mjs --out runtime-staging --version $(node -e "console.log(require('./scripts/node-version.json').version)")
+        run: node scripts/fetch-node.mjs --out src-tauri/node-runtime --version $(node -e "console.log(require('./scripts/node-version.json').version)")
+
+      - name: Verify node runtime exists
+        shell: bash
+        run: |
+          ls -la src-tauri/node-runtime/
+          ls -la src-tauri/node-runtime/node/ | head -20
+          if [ -f src-tauri/node-runtime/node/bin/node ] || [ -f src-tauri/node-runtime/node/node.exe ]; then
+            echo "node binary found"
+          else
+            echo "node binary MISSING" >&2
+            exit 1
+          fi
 
       - name: Resolve kernel version
         id: kernel
