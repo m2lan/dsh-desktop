@@ -13,17 +13,14 @@ on:
 jobs:
   build:
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            args: ""
           - os: macos-latest
-            args: ""
           - os: ubuntu-latest
-            args: ""
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -60,6 +57,29 @@ jobs:
             exit 1
           fi
 
+      - name: Build Tauri release bundles
+        run: npm run build
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.os }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
+
+  release:
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Resolve kernel version
         id: kernel
         shell: bash
@@ -70,17 +90,37 @@ jobs:
             echo "version=$(node -e "console.log(require('./scripts/kernel-version.json').version)")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build Tauri release and publish draft release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Set these secrets from `tauri signer generate` output.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Download all bundle artifacts
+        uses: actions/download-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "dsh-desktop ${{ github.ref_name }}"
-          releaseBody: "Kernel: @deepseek-ai/dsh@${{ steps.kernel.outputs.version }}"
-          releaseDraft: true
-          prerelease: false
-          args: ""
+          path: artifacts
+
+      - name: Create (or reuse) the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists, reusing it"
+          else
+            gh release create "$TAG" \
+              --draft \
+              --title "dsh-desktop $TAG" \
+              --notes "Kernel: @deepseek-ai/dsh@${{ steps.kernel.outputs.version }}"
+            echo "created draft release $TAG"
+          fi
+
+      - name: Upload all platform artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          # upload every file (skip directories like .app; tauri already emits .app.tar.gz)
+          find artifacts -type f | while read -r f; do
+            echo "uploading: $f"
+            gh release upload "$TAG" "$f" --clobber || echo "FAILED: $f"
+          done
+          echo "--- release assets ---"
+          gh release view "$TAG" --json assets --jq '.assets[].name'
