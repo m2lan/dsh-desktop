@@ -117,10 +117,21 @@ jobs:
         shell: bash
         run: |
           TAG="${{ github.ref_name }}"
-          # upload every file (skip directories like .app; tauri already emits .app.tar.gz)
-          find artifacts -type f | while read -r f; do
-            echo "uploading: $f"
-            gh release upload "$TAG" "$f" --clobber || echo "FAILED: $f"
-          done
+          # Upload only installer archives, NOT the files inside macOS .app
+          # directories (hundreds of tiny files — uploading them one-by-one
+          # took 20+ minutes). Installers live at:
+          #   bundle/nsis/*.exe, bundle/msi/*.msi, bundle/dmg/*.dmg,
+          #   bundle/deb/*.deb, bundle/rpm/*.rpm, bundle/appimage/*.AppImage
+          count=0
+          find artifacts -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+               -o -name '*.tar.gz' \) \
+            -not -path '*/.app/*' \
+          | while read -r f; do
+              echo "uploading: $f"
+              gh release upload "$TAG" "$f" --clobber || echo "FAILED: $f"
+              count=$((count + 1))
+            done
           echo "--- release assets ---"
           gh release view "$TAG" --json assets --jq '.assets[].name'

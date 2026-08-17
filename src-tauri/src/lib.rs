@@ -23,8 +23,23 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Windows: run a spawned process without popping up a console window
+/// (CREATE_NO_WINDOW). Without this, every `node`/`npm` spawn flashes a
+/// black cmd box — the opposite of a native desktop app.
+fn no_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
+}
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -176,14 +191,16 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
     }
     std::fs::create_dir_all(dsh_home(app)).map_err(|e| e.to_string())?;
 
-    let mut child = Command::new(&node)
-        .arg(&entry)
+    let mut cmd = Command::new(&node);
+    cmd.arg(&entry)
         .arg("web")
         .arg("--port")
         .arg("0") // let the OS pick a free port
         .env("DSH_HOME", dsh_home(app))
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    no_console(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn dsh: {e}"))?;
 
@@ -307,8 +324,10 @@ fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
         return Err(format!("check-upstream.mjs not found at {}", script.display()));
     }
     let node = node_bin(&app);
-    let output = Command::new(&node)
-        .arg(&script)
+    let mut cmd = Command::new(&node);
+    cmd.arg(&script);
+    no_console(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| format!("failed to run check-upstream: {e}"))?;
     if !output.status.success() {
@@ -357,12 +376,14 @@ fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
         guard.url = None;
     }
 
-    let output = Command::new(&node)
-        .arg(&script)
+    let mut cmd = Command::new(&node);
+    cmd.arg(&script)
         .arg("--dir")
         .arg(kernel_dir(app))
         .arg("--version")
-        .arg(version)
+        .arg(version);
+    no_console(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| format!("failed to run fetch-dsh: {e}"))?;
 
