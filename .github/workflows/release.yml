@@ -43,10 +43,12 @@ jobs:
         run: npm install
 
       - name: Fetch portable Node runtime
+        shell: bash
         run: node scripts/fetch-node.mjs --out runtime-staging --version $(node -e "console.log(require('./scripts/node-version.json').version)")
 
       - name: Resolve kernel version
         id: kernel
+        shell: bash
         run: |
           if [ -n "${{ inputs.kernel_version }}" ]; then
             echo "version=${{ inputs.kernel_version }}" >> "$GITHUB_OUTPUT"
