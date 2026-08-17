@@ -24,7 +24,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -303,8 +303,8 @@ fn open_kernel_window(app: AppHandle, state: State<'_, KernelState>) -> Result<(
         .map_err(|e| format!("bad kernel url {url}: {e}"))?;
     let win = WebviewWindowBuilder::new(&app, "kernel", WebviewUrl::External(parsed))
         .title("DeepSeek Harness")
-        .inner_size((1280.0, 860.0))
-        .min_inner_size((900.0, 600.0))
+        .inner_size(1280.0, 860.0)
+        .min_inner_size(900.0, 600.0)
         .build()
         .map_err(|e| format!("failed to open kernel window: {e}"))?;
     let _ = win.set_focus();
