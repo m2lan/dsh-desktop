@@ -24,7 +24,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -210,6 +210,12 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
                     }
                     let _ = app2.emit("kernel-url", url.clone());
                     let _ = app2.emit("kernel-status", "ready");
+                    // Navigate the main window straight to the harness.
+                    if let Some(win) = app2.get_webview_window("main") {
+                        if let Ok(parsed) = url.parse::<tauri::Url>() {
+                            let _ = win.navigate(parsed);
+                        }
+                    }
                     return;
                 }
             }
@@ -281,36 +287,6 @@ fn restart_kernel(app: AppHandle, state: State<'_, KernelState>) -> Result<(), S
     start_kernel(&app)
 }
 
-/// Open (or focus) the native window that loads the kernel URL.
-#[tauri::command]
-fn open_kernel_window(app: AppHandle, state: State<'_, KernelState>) -> Result<(), String> {
-    let url = state
-        .0
-        .lock()
-        .unwrap()
-        .url
-        .clone()
-        .ok_or_else(|| "kernel not ready".to_string())?;
-
-    if let Some(win) = app.get_webview_window("kernel") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return Ok(());
-    }
-
-    let parsed = url
-        .parse::<tauri::Url>()
-        .map_err(|e| format!("bad kernel url {url}: {e}"))?;
-    let win = WebviewWindowBuilder::new(&app, "kernel", WebviewUrl::External(parsed))
-        .title("DeepSeek Harness")
-        .inner_size(1280.0, 860.0)
-        .min_inner_size(900.0, 600.0)
-        .build()
-        .map_err(|e| format!("failed to open kernel window: {e}"))?;
-    let _ = win.set_focus();
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Kernel update
 // ---------------------------------------------------------------------------
@@ -362,51 +338,53 @@ fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
 }
 
 /// Install (or upgrade) the dsh kernel to `version` (or "latest") using
-/// `scripts/fetch-dsh.mjs`, which performs an atomic directory swap.
-#[tauri::command]
-fn apply_update(
-    app: AppHandle,
-    version: Option<String>,
-) -> Result<(), String> {
-    let script = scripts_dir(&app).join("fetch-dsh.mjs");
+/// `scripts/fetch-dsh.mjs`, which performs an atomic directory swap, then
+/// start the kernel. Reports progress via the `update-status` event.
+fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
+    let script = scripts_dir(app).join("fetch-dsh.mjs");
     if !script.exists() {
         return Err(format!("fetch-dsh.mjs not found at {}", script.display()));
     }
-    let version = version.unwrap_or_else(|| "latest".to_string());
-    let node = node_bin(&app);
+    let node = node_bin(app);
 
-    // Long-running: run in a background thread and report progress via events.
+    // Stop kernel before swapping files.
+    {
+        let st = app.state::<KernelState>();
+        let mut guard = st.0.lock().unwrap();
+        if let Some(mut child) = guard.child.take() {
+            kill_tree(&mut child);
+        }
+        guard.url = None;
+    }
+
+    let output = Command::new(&node)
+        .arg(&script)
+        .arg("--dir")
+        .arg(kernel_dir(app))
+        .arg("--version")
+        .arg(version)
+        .output()
+        .map_err(|e| format!("failed to run fetch-dsh: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "install failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    start_kernel(app)
+}
+
+/// Install (or upgrade) the kernel in the background, emitting `update-status`.
+#[tauri::command]
+fn apply_update(app: AppHandle, version: Option<String>) -> Result<(), String> {
+    let version = version.unwrap_or_else(|| "latest".to_string());
     let app2 = app.clone();
     thread::spawn(move || {
         let _ = app2.emit("update-status", "installing");
-
-        // Stop kernel before swapping files.
-        {
-            let st = app2.state::<KernelState>();
-            let mut guard = st.0.lock().unwrap();
-            if let Some(mut child) = guard.child.take() {
-                kill_tree(&mut child);
-            }
-            guard.url = None;
-        }
-
-        let output = Command::new(&node)
-            .arg(&script)
-            .arg("--dir")
-            .arg(kernel_dir(&app2))
-            .arg("--version")
-            .arg(&version)
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {
+        match install_kernel(&app2, &version) {
+            Ok(()) => {
                 let _ = app2.emit("update-status", "done");
-                // Restart the kernel with the fresh install.
-                let _ = start_kernel(&app2);
-            }
-            Ok(o) => {
-                let err = String::from_utf8_lossy(&o.stderr);
-                let _ = app2.emit("update-status", format!("error: {err}"));
             }
             Err(e) => {
                 let _ = app2.emit("update-status", format!("error: {e}"));
@@ -474,11 +452,23 @@ pub fn run() {
         .setup(|app| {
             build_tray(&app.handle())?;
 
-            // Auto-start the kernel if one is installed.
+            // Boot the kernel. If it isn't installed yet, install it first
+            // (background, with progress via `update-status` events).
             if kernel_entry(&app.handle()).exists() {
                 let _ = start_kernel(&app.handle());
             } else {
-                let _ = app.emit("kernel-status", "no-kernel");
+                let handle = app.handle().clone();
+                thread::spawn(move || {
+                    let _ = handle.emit("update-status", "installing");
+                    match install_kernel(&handle, "latest") {
+                        Ok(()) => {
+                            let _ = handle.emit("update-status", "done");
+                        }
+                        Err(e) => {
+                            let _ = handle.emit("update-status", format!("error: {e}"));
+                        }
+                    }
+                });
             }
             Ok(())
         })
@@ -487,7 +477,6 @@ pub fn run() {
             start_kernel_cmd,
             stop_kernel_cmd,
             restart_kernel,
-            open_kernel_window,
             check_update,
             apply_update
         ])
