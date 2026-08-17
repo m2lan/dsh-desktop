@@ -1,115 +1,122 @@
 # dsh-desktop
 
-Tauri 桌面壳，用于把 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 封装成原生桌面应用。
+**English** | [简体中文](README.zh-CN.md)
 
-**壳核分离（shell/kernel separation）**：外壳（本 Tauri 应用）只负责进程管理与原生窗口；dsh 内核（`@deepseek-ai/dsh` + 便携 Node 运行时）存放在用户数据目录，可独立升级，**不破坏 dsh 插件生态**，用户配置（`DSH_HOME`）与内核升级互不干扰。
+A [Tauri](https://v2.tauri.app/) desktop shell that packages [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) into a native desktop application.
 
-## 架构
+**Shell/kernel separation**: the shell (this Tauri app) is only responsible for process management and native windows. The dsh kernel (`@deepseek-ai/dsh` + a portable Node.js runtime) lives in the user data directory and can be upgraded independently — **without breaking the dsh plugin ecosystem**. User configuration (`DSH_HOME`) is never touched by kernel upgrades.
+
+## Architecture
 
 ```
-┌────────────────────────────────────────────┐
-│ Tauri 壳（Rust + WebView2/WKWebView/WebKitGTK）│
-│ · 启动时 spawn：node <kernel>/…/dsh lib/bin.js │
-│   web --port 0（端口由系统分配）              │
-│ · 解析 stdout 的 "dsh web: http://127.0.0.1:PORT"│
-│ · 打开原生 WebView 窗口指向该 URL             │
-│ · 关闭窗口/退出时 taskkill 内核进程树          │
-│ · 托盘：显示 / 退出                          │
-└───────────────┬────────────────────────────┘
-                │ 用户数据目录（app_data_dir）
+┌──────────────────────────────────────────────┐
+│ Tauri shell (Rust + WebView2/WKWebView/WebKitGTK) │
+│ · spawns: node <kernel>/…/dsh lib/bin.js          │
+│   web --port 0 (OS-assigned free port)            │
+│ · parses "dsh web: http://127.0.0.1:PORT" from stdout │
+│ · opens a native WebView window at that URL       │
+│ · kills the kernel process tree on window close   │
+│ · tray icon: Show / Quit                          │
+└───────────────┬──────────────────────────────────┘
+                │ user data dir (app_data_dir)
                 ▼
-┌────────────────────────────────────────────┐
-│ runtime/  便携 Node（CI 下载，打进安装包）     │
-│ kernel/   @deepseek-ai/dsh 及依赖（npm 安装） │
-│ dsh-home/ DSH_HOME：用户 profile 与插件（永不覆盖）│
-└────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ runtime/  portable Node (fetched by CI, bundled) │
+│ kernel/   @deepseek-ai/dsh + deps (npm install)  │
+│ dsh-home/ DSH_HOME: user profiles & plugins (never overwritten) │
+└──────────────────────────────────────────────┘
 ```
 
-## 更新机制（两层，互相独立）
+## Update mechanism (two independent layers)
 
-### 1. 内核更新（dsh 本体，随上游自动同步）
+### 1. Kernel updates (dsh itself, auto-synced with upstream)
 
-- 每次启动或点击「检查更新」，壳调用 `scripts/check-upstream.mjs` 查询 npm registry 的 `@deepseek-ai/dsh` 最新版；
-- 点击「应用更新」→ `scripts/fetch-dsh.mjs` 执行 `npm install --prefix <staging> @deepseek-ai/dsh@<version>`，随后**原子替换** `kernel/` 目录（旧目录备份为 `.old`，失败自动回滚）；
-- 更新完成自动重启内核。`DSH_HOME`（profile、插件）不受影响。
+- On every launch, or when you click **Check for Updates**, the shell runs `scripts/check-upstream.mjs` to query the npm registry for the latest `@deepseek-ai/dsh`;
+- Clicking **Apply Update** runs `scripts/fetch-dsh.mjs`, which executes `npm install --prefix <staging> @deepseek-ai/dsh@<version>` and then **atomically swaps** the `kernel/` directory (the old directory is kept as `.old`, with automatic rollback on failure);
+- The kernel restarts automatically after the update. `DSH_HOME` (profiles, plugins) is unaffected.
 
-### 2. 外壳更新（Tauri 本体，可选）
+### 2. Shell updates (the Tauri app itself, optional)
 
-壳默认**不注册** updater 插件：它要求 `tauri.conf.json` 里有合法的 minisign 公钥，占位符会导致启动崩溃。外壳更新频率很低（Rust 侧逻辑变更才发版），需要时按下面步骤启用：
+The shell does **not** register the updater plugin by default: it requires a valid minisign public key in `tauri.conf.json`, and a placeholder key would crash the app at startup. Shell releases are infrequent (only when Rust-side logic changes). To enable:
 
-1. 生成签名密钥：`npx tauri signer generate -w ~/.tauri/dsh-desktop.key`；
-2. 把公钥填入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`，endpoints 指向你的 GitHub Releases；
-3. 取消 `src-tauri/Cargo.toml` 中 `tauri-plugin-updater` 的注释，并在 `src-tauri/src/lib.rs` 的 `run()` 里恢复 `.plugin(tauri_plugin_updater::Builder::new().build())`；
-4. 发布时用 `tauri signer sign` 对产物签名并上传 `updater.json`。
+1. Generate a signing key: `npx @tauri-apps/cli signer generate -w ~/.tauri/dsh-desktop.key`;
+2. Paste the public key into `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and point `endpoints` at your GitHub Releases;
+3. Uncomment `tauri-plugin-updater` in `src-tauri/Cargo.toml` and restore `.plugin(tauri_plugin_updater::Builder::new().build())` in `run()` in `src-tauri/src/lib.rs`;
+4. Sign the artifacts with `tauri signer sign` and upload `updater.json` when releasing.
 
-## 与上游 deepseek-harness 保持同步
+## Keeping in sync with upstream deepseek-harness
 
-- 上游发布 npm 包 `@deepseek-ai/dsh`（当前版本见 `scripts/kernel-version.json`）；
-- `.github/workflows/sync-upstream.yml` **每日检查** npm registry，发现新版本自动开 PR 更新 `scripts/kernel-version.json`；
-- 合并 PR 后打 `v*` tag 触发 `.github/workflows/release.yml` 重新构建安装包。
+- Upstream publishes the npm package `@deepseek-ai/dsh` (current baseline: see `scripts/kernel-version.json`);
+- `.github/workflows/sync-upstream.yml` **checks the npm registry daily** and opens a PR to bump `scripts/kernel-version.json` when a new version is found;
+- After merging the PR, push a `v*` tag to trigger `.github/workflows/release.yml`, which rebuilds the installers.
 
-## 本地开发
+## Local development
 
-前置要求：Node 22+、Rust stable、各平台 Tauri 依赖
-（Windows 需 MSVC Build Tools + WebView2；macOS 需 Xcode；Linux 需 webkit2gtk-4.1 等）。
+Prerequisites: Node 22+, stable Rust, and the platform Tauri dependencies
+(Windows: MSVC Build Tools + WebView2; macOS: Xcode; Linux: webkit2gtk-4.1 etc.).
 
 ```bash
-# 1. 生成图标（纯 Node，无外部依赖）
+# 1. Generate icons (pure Node, no external deps)
 node scripts/gen-icons.mjs
 
-# 2. 安装前端/dev 依赖
+# 2. Install dev dependencies
 npm install
 
-# 3. 准备便携 Node 运行时（壳默认用系统 node 也能开发，但打包需要）
+# 3. Fetch the portable Node runtime (dev works with system node; packaging needs it)
 node scripts/fetch-node.mjs --out src-tauri/node-runtime --version $(node -e "console.log(require('./scripts/node-version.json').version)")
 
-# 4. 安装 dsh 内核到用户数据目录（也可直接启动后点「应用更新」）
+# 4. Install the dsh kernel into the user data dir (or click "Apply Update" after launch)
 node scripts/fetch-dsh.mjs --dir "$APPDATA/com.dsh.desktop/kernel" --version latest
 
-# 5. 开发运行
+# 5. Run in development
 npm run dev
 ```
 
-> 开发期壳会自动用 PATH 上的 `node`；打包后使用打进 `resources/runtime` 的便携 Node，终端用户无需安装 Node/npm。
+> In development the shell falls back to `node` from PATH; packaged builds use the portable Node bundled into `resources/runtime`, so end users never need to install Node/npm.
 
-## 打包发布
+## Build & release
 
 ```bash
-# 生成签名密钥（首次，一次性）
-npx tauri signer generate -w ~/.tauri/dsh-desktop.key
-# 把公钥填进 src-tauri/tauri.conf.json 的 plugins.updater.pubkey
-# 把私钥与密码配置为仓库 secrets：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# Generate a signing key (one-time)
+npx @tauri-apps/cli signer generate -w ~/.tauri/dsh-desktop.key
+# Put the PUBLIC key into plugins.updater.pubkey in src-tauri/tauri.conf.json
+# Store the PRIVATE key and its password as repo secrets:
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
-# 构建安装包（会带上 src-tauri/node-runtime 里的便携 Node）
+# Build installers (includes the portable Node from src-tauri/node-runtime)
 npm run build
 ```
 
-发布流程建议走 `.github/workflows/release.yml`：打 `v0.1.0` tag 即触发三平台构建、签名、上传 release draft。
+The recommended release flow goes through `.github/workflows/release.yml`: pushing a `v0.1.0` tag triggers a three-platform build, signing, and a draft release upload.
 
-## 目录结构
+## Repository layout
 
 ```
 dsh-desktop/
-├── package.json              # 脚本入口（tauri dev/build）
-├── ui/                       # 控制面板前端（原生 HTML/JS，无需打包器）
+├── package.json              # script entry (tauri dev/build)
+├── ui/                       # control-panel frontend (plain HTML/JS, no bundler)
 ├── src-tauri/
-│   ├── src/lib.rs            # 内核进程管理、更新命令、托盘
-│   ├── tauri.conf.json       # 窗口/打包/更新器配置
-│   └── capabilities/         # Tauri 权限
+│   ├── src/lib.rs            # kernel process management, update commands, tray
+│   ├── tauri.conf.json       # window / bundling / updater config
+│   └── capabilities/         # Tauri permissions
 ├── scripts/
-│   ├── fetch-dsh.mjs         # 内核安装/升级（npm + 原子替换）
-│   ├── check-upstream.mjs    # 查询 npm registry 最新版
-│   ├── fetch-node.mjs        # 下载便携 Node 运行时
-│   ├── gen-icons.mjs         # 生成图标（零依赖）
-│   ├── kernel-version.json   # 内核基线版本（上游同步目标）
-│   └── node-version.json     # 便携 Node 版本
+│   ├── fetch-dsh.mjs         # kernel install/upgrade (npm + atomic swap)
+│   ├── check-upstream.mjs    # query npm registry for the latest version
+│   ├── fetch-node.mjs        # download the portable Node runtime
+│   ├── gen-icons.mjs         # generate icons (zero dependencies)
+│   ├── kernel-version.json   # kernel baseline version (upstream sync target)
+│   └── node-version.json     # portable Node version
 └── .github/workflows/
-    ├── sync-upstream.yml     # 每日上游检查 + 自动 PR
-    └── release.yml           # 打 tag 构建三平台安装包
+    ├── sync-upstream.yml     # daily upstream check + auto PR
+    └── release.yml           # tag-triggered three-platform build
 ```
 
-## 已知事项
+## Known notes
 
-- 首次启动若内核未安装，控制面板会提示「内核未安装」，点击「检查更新」→「应用更新」即可（需联网）；
-- 关闭所有窗口即退出应用并停止内核；托盘图标可重新打开；
-- 当前内核为预发布版本（`0.1.0-rc.x`），上游 API 可能变动，升级内核后如遇异常请查看「内核日志」面板。
+- On first launch, if the kernel is not installed, the control panel shows "kernel not installed" — click **Check for Updates** then **Apply Update** (requires network);
+- Closing all windows quits the app and stops the kernel; the tray icon can reopen it;
+- The kernel is currently a pre-release (`0.1.0-rc.x`); upstream APIs may change. If something misbehaves after a kernel upgrade, check the "kernel log" panel.
+
+## License
+
+MIT
