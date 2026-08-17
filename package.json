@@ -1,0 +1,18 @@
+{
+  "name": "dsh-desktop",
+  "version": "0.1.0",
+  "description": "Tauri desktop shell for DeepSeek Harness (dsh) — shell/kernel separated, auto-updating",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "kernel:fetch": "node scripts/fetch-dsh.mjs",
+    "kernel:update": "node scripts/fetch-dsh.mjs --update",
+    "node:fetch": "node scripts/fetch-node.mjs",
+    "check:upstream": "node scripts/check-upstream.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

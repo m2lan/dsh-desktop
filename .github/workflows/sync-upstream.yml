@@ -1,0 +1,56 @@
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # daily 02:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Query latest @deepseek-ai/dsh from npm
+        id: npm
+        run: |
+          JSON=$(node scripts/check-upstream.mjs)
+          echo "version=$(echo "$JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with baseline
+        id: compare
+        run: |
+          CURRENT=$(node -e "console.log(require('./scripts/kernel-version.json').version)")
+          LATEST="${{ steps.npm.outputs.version }}"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" != "$LATEST" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Create bump PR
+        if: steps.compare.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: auto/kernel-bump-${{ steps.compare.outputs.latest }}
+          title: "chore: bump dsh kernel to ${{ steps.compare.outputs.latest }}"
+          commit-message: "chore: bump dsh kernel to ${{ steps.compare.outputs.latest }}"
+          delete-branch: true
+          body: |
+            Auto-detected a new upstream release of `@deepseek-ai/dsh`.
+
+            - Current baseline: `${{ steps.compare.outputs.current }}`
+            - New upstream version: `${{ steps.compare.outputs.latest }}`
+
+            Merging this PR updates `scripts/kernel-version.json`. The release
+            workflow will rebuild installers embedding the new kernel.
+
+      - name: No update available
+        if: steps.compare.outputs.changed == 'false'
+        run: echo "dsh kernel is already at ${{ steps.compare.outputs.current }} — nothing to do"

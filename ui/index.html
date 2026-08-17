@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dsh-desktop — DeepSeek Harness</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="logo">dsh</div>
+        <div>
+          <h1>dsh-desktop</h1>
+          <p class="subtitle">DeepSeek Harness 桌面壳 · 壳核分离</p>
+        </div>
+      </div>
+      <div class="status-pill" id="status-pill" data-state="unknown">检测中…</div>
+    </header>
+
+    <section class="card">
+      <h2>内核状态</h2>
+      <dl class="kv">
+        <div><dt>安装目录</dt><dd id="kernel-dir">—</dd></div>
+        <div><dt>DSH_HOME</dt><dd id="dsh-home">—</dd></div>
+        <div><dt>当前内核版本</dt><dd id="kernel-version">—</dd></div>
+        <div><dt>最新版本</dt><dd id="latest-version">—</dd></div>
+        <div><dt>服务地址</dt><dd id="kernel-url">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="card">
+      <h2>控制</h2>
+      <div class="actions">
+        <button id="btn-open" disabled>打开 Harness 界面</button>
+        <button id="btn-start" disabled>启动内核</button>
+        <button id="btn-stop" disabled>停止内核</button>
+        <button id="btn-restart" disabled>重启内核</button>
+        <button id="btn-check" disabled>检查更新</button>
+        <button id="btn-update" disabled>应用更新</button>
+      </div>
+      <p class="hint">提示：关闭所有窗口后 dsh 内核会自动退出；可通过系统托盘重新打开。</p>
+    </section>
+
+    <section class="card">
+      <h2>内核日志</h2>
+      <pre class="log" id="log">—</pre>
+    </section>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>

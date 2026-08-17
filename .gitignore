@@ -1,0 +1,17 @@
+# Node / npm
+node_modules/
+package-lock.json
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Runtime staging (portable node fetched by CI)
+runtime-staging/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

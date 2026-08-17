@@ -1,0 +1,70 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: "dsh kernel version to embed (leave empty for baseline from scripts/kernel-version.json)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+          - os: macos-latest
+            args: ""
+          - os: ubuntu-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend/dev dependencies
+        run: npm install
+
+      - name: Fetch portable Node runtime
+        run: node scripts/fetch-node.mjs --out runtime-staging --version $(node -e "console.log(require('./scripts/node-version.json').version)")
+
+      - name: Resolve kernel version
+        id: kernel
+        run: |
+          if [ -n "${{ inputs.kernel_version }}" ]; then
+            echo "version=${{ inputs.kernel_version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(node -e "console.log(require('./scripts/kernel-version.json').version)")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Tauri release and publish draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Set these secrets from `tauri signer generate` output.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "dsh-desktop ${{ github.ref_name }}"
+          releaseBody: "Kernel: @deepseek-ai/dsh@${{ steps.kernel.outputs.version }}"
+          releaseDraft: true
+          prerelease: false
+          args: ""
