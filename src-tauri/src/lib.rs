@@ -395,10 +395,10 @@ fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to run fetch-dsh: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!(
-            "install failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let msg = format!("install failed: {}", String::from_utf8_lossy(&output.stderr));
+        // Try to bring the old kernel back so history/model fetches don't stay dead
+        let _ = start_kernel(app);
+        return Err(msg);
     }
     start_kernel(app)
 }
@@ -488,11 +488,13 @@ pub fn run() {
             // the not-installed case triggered an install).
             if kernel_entry(&app.handle()).exists() {
                 let _ = start_kernel(&app.handle());
-                // Background auto-update check (non-blocking, best-effort).
+                // Background check: only notify, do NOT auto-install.
+                // Auto-killing the kernel 2s after boot breaks history/model fetches
+                // if npm install fails (EPERM, offline) — kernel stays dead.
+                // Now we just emit an event; UI can show "update available -> click Apply".
                 let handle = app.handle().clone();
                 thread::spawn(move || {
-                    // Give the kernel a moment to boot before touching the network.
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(Duration::from_secs(3));
                     let script = scripts_dir(&handle).join("check-upstream.mjs");
                     if !script.exists() {
                         return;
@@ -503,7 +505,7 @@ pub fn run() {
                     no_console(&mut cmd);
                     let output = match cmd.output() {
                         Ok(o) if o.status.success() => o,
-                        _ => return, // silent if offline / check failed
+                        _ => return,
                     };
                     let text = String::from_utf8_lossy(&output.stdout);
                     let last_line = text.lines().last().unwrap_or("").trim().to_string();
@@ -517,18 +519,11 @@ pub fn run() {
                     }
                     let current = installed_version(&handle);
                     if current.as_deref() == Some(latest.as_str()) {
-                        return; // already up-to-date
+                        return;
                     }
-                    let _ = handle.emit("update-status", format!("update available: {} -> {}, installing…", current.unwrap_or_default(), latest));
-                    // Reuse install_kernel (it stops the kernel, swaps dir, restarts)
-                    match install_kernel(&handle, &latest) {
-                        Ok(()) => {
-                            let _ = handle.emit("update-status", "done");
-                        }
-                        Err(e) => {
-                            let _ = handle.emit("update-status", format!("auto-update failed: {e}"));
-                        }
-                    }
+                    // Notify only — user clicks "Apply Update" to actually install
+                    let _ = handle.emit("update-status", format!("update available: {} -> {}", current.unwrap_or_default(), latest));
+                    let _ = handle.emit("kernel-log", format!("[dsh-desktop] update available: {} -> {} (click Apply Update)", current.unwrap_or_default(), latest));
                 });
             } else {
                 let handle = app.handle().clone();
