@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.1.3"
+version = "0.1.4"
 description = "Tauri desktop shell for DeepSeek Harness (dsh) — shell/kernel separated, auto-updating"
 authors = ["dsh-desktop contributors"]
 edition = "2021"
@@ -14,8 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "dialog"] }
 tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
 # tauri-plugin-updater = "2"   # optional: shell updates (see README "外壳更新")
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

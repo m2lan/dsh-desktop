@@ -427,11 +427,15 @@ fn apply_update(app: AppHandle, version: Option<String>) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem};
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
     let show = MenuItem::with_id(app, "show", "Show dsh-desktop", true, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", "Kernel Status…", true, None::<&str>)?;
+    let check = MenuItem::with_id(app, "check", "Check for Updates…", true, None::<&str>)?;
+    let apply = MenuItem::with_id(app, "apply", "Apply Update (latest)…", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &status, &check, &apply, &sep, &quit])?;
 
     let _tray = tauri::tray::TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
@@ -445,6 +449,93 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = win.unminimize();
                     let _ = win.set_focus();
                 }
+            }
+            "status" => {
+                let app2 = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = {
+                        let s = app2.state::<KernelState>();
+                        let g = s.0.lock().unwrap();
+                        (g.child.is_some(), g.url.clone())
+                    };
+                    let ver = installed_version(&app2).unwrap_or_else(|| "(not installed)".to_string());
+                    let kdir = kernel_dir(&app2).display().to_string();
+                    let home = dsh_home(&app2).display().to_string();
+                    let msg = format!(
+                        "Kernel: {}\nInstalled: {}\nRunning: {}\nURL: {}\nKernel dir: {}\nDSH_HOME: {}",
+                        ver,
+                        kernel_entry(&app2).exists(),
+                        st.0,
+                        st.1.unwrap_or_else(|| "(not running)".to_string()),
+                        kdir,
+                        home
+                    );
+                    use tauri_plugin_dialog::DialogExt;
+                    app2.dialog().message(msg).title("dsh-desktop — Kernel Status").show(|_| {});
+                });
+            }
+            "check" => {
+                let app2 = app.clone();
+                std::thread::spawn(move || {
+                    let app3 = app2.clone();
+                    match check_update(app2) {
+                        Ok(info) => {
+                            let msg = if info.has_update {
+                                format!("Update available: {} → {}", info.current.unwrap_or_else(|| "(none)".to_string()), info.latest)
+                            } else {
+                                format!("Already up-to-date: {}", info.current.unwrap_or_else(|| info.latest.clone()))
+                            };
+                            let _ = app3.emit("update-status", msg.clone());
+                            let _ = app3.emit("kernel-log", format!("[dsh-desktop] {}", msg));
+                            use tauri_plugin_dialog::DialogExt;
+                            app3.dialog().message(msg).title("Check for Updates").show(|_| {});
+                        }
+                        Err(e) => {
+                            use tauri_plugin_dialog::DialogExt;
+                            app3.dialog().message(format!("Check failed: {e}")).title("Check for Updates").show(|_| {});
+                        }
+                    }
+                });
+            }
+            "apply" => {
+                let app2 = app.clone();
+                // Ask registry for best version first, then install
+                std::thread::spawn(move || {
+                    let best = {
+                        let script = scripts_dir(&app2).join("check-upstream.mjs");
+                        let node = node_bin(&app2);
+                        let mut cmd = std::process::Command::new(&node);
+                        cmd.arg(&script);
+                        no_console(&mut cmd);
+                        cmd.output().ok().and_then(|o| {
+                            if !o.status.success() { return None; }
+                            let txt = String::from_utf8_lossy(&o.stdout);
+                            let last = txt.lines().last()?.trim().to_string();
+                            let v: serde_json::Value = serde_json::from_str(&last).ok()?;
+                            v.get("version")?.as_str().map(|s| s.to_string())
+                        }).unwrap_or_else(|| "latest".to_string())
+                    };
+                    let app3 = app2.clone();
+                    let best2 = best.clone();
+                    use tauri_plugin_dialog::DialogExt;
+                    app3.dialog().message(format!("Will install @deepseek-ai/dsh@{best} — kernel will restart. Continue?")).title("Apply Update").show(move |ok| {
+                        if !ok { return; }
+                        let _ = app2.emit("update-status", format!("installing {best2}…"));
+                        let app4 = app2.clone();
+                        std::thread::spawn(move || {
+                            match install_kernel(&app4, &best2) {
+                                Ok(()) => {
+                                    let _ = app4.emit("update-status", "done");
+                                    app4.dialog().message(format!("Kernel updated to {best2} and restarted.")).title("Update done").show(|_| {});
+                                }
+                                Err(e) => {
+                                    let _ = app4.emit("update-status", format!("error: {e}"));
+                                    app4.dialog().message(format!("Install failed: {e}\nOld kernel was restarted if possible.")).title("Update failed").show(|_| {});
+                                }
+                            }
+                        });
+                    });
+                });
             }
             "quit" => {
                 app.exit(0);
@@ -476,6 +567,7 @@ pub fn run() {
                 let _ = win.set_focus();
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .manage(KernelState::default())
         .setup(|app| {
             build_tray(&app.handle())?;
