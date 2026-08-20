@@ -317,6 +317,11 @@ struct UpdateInfo {
 }
 
 /// Check the npm registry for the latest @deepseek-ai/dsh version.
+///
+/// `check-upstream.mjs` now returns `{version, latest, next}` where
+/// `version` is the highest available (so rc.8 on `next` is visible
+/// even when `latest` is still rc.7). We expose `latest` as that
+/// picked version for the UI, and keep `current` for comparison.
 #[tauri::command]
 fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
     let script = scripts_dir(&app).join("check-upstream.mjs");
@@ -337,8 +342,10 @@ fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
         ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
+    // stdout is one JSON line; stderr may contain the "latest=… next=…" hint
+    let last_line = text.lines().last().unwrap_or("").trim();
     let json: serde_json::Value =
-        serde_json::from_str(text.trim()).map_err(|e| format!("bad check-upstream output: {e}"))?;
+        serde_json::from_str(last_line).map_err(|e| format!("bad check-upstream output: {e} — raw: {last_line}"))?;
     let latest = json
         .get("version")
         .and_then(|v| v.as_str())
@@ -475,13 +482,80 @@ pub fn run() {
 
             // Boot the kernel. If it isn't installed yet, install it first
             // (background, with progress via `update-status` events).
+            // If it IS installed, start it immediately and auto-check for
+            // updates in the background — this is what makes
+            // "每次启动自动检查并同步更新" actually work (previously only
+            // the not-installed case triggered an install).
             if kernel_entry(&app.handle()).exists() {
                 let _ = start_kernel(&app.handle());
+                // Background auto-update check (non-blocking, best-effort).
+                let handle = app.handle().clone();
+                thread::spawn(move || {
+                    // Give the kernel a moment to boot before touching the network.
+                    thread::sleep(Duration::from_secs(2));
+                    let script = scripts_dir(&handle).join("check-upstream.mjs");
+                    if !script.exists() {
+                        return;
+                    }
+                    let node = node_bin(&handle);
+                    let mut cmd = Command::new(&node);
+                    cmd.arg(&script);
+                    no_console(&mut cmd);
+                    let output = match cmd.output() {
+                        Ok(o) if o.status.success() => o,
+                        _ => return, // silent if offline / check failed
+                    };
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    let last_line = text.lines().last().unwrap_or("").trim().to_string();
+                    let json: serde_json::Value = match serde_json::from_str(&last_line) {
+                        Ok(v) => v,
+                        Err(_) => return,
+                    };
+                    let latest = json.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if latest.is_empty() {
+                        return;
+                    }
+                    let current = installed_version(&handle);
+                    if current.as_deref() == Some(latest.as_str()) {
+                        return; // already up-to-date
+                    }
+                    let _ = handle.emit("update-status", format!("update available: {} -> {}, installing…", current.unwrap_or_default(), latest));
+                    // Reuse install_kernel (it stops the kernel, swaps dir, restarts)
+                    match install_kernel(&handle, &latest) {
+                        Ok(()) => {
+                            let _ = handle.emit("update-status", "done");
+                        }
+                        Err(e) => {
+                            let _ = handle.emit("update-status", format!("auto-update failed: {e}"));
+                        }
+                    }
+                });
             } else {
                 let handle = app.handle().clone();
                 thread::spawn(move || {
                     let _ = handle.emit("update-status", "installing");
-                    match install_kernel(&handle, "latest") {
+                    // For first install, ask the registry for the best version (rc.8 on `next`)
+                    // instead of hard-coded "latest" (which would be rc.7 while next=rc.8).
+                    let mut target = "latest".to_string();
+                    let script = scripts_dir(&handle).join("check-upstream.mjs");
+                    if script.exists() {
+                        let node = node_bin(&handle);
+                        let mut cmd = Command::new(&node);
+                        cmd.arg(&script);
+                        no_console(&mut cmd);
+                        if let Ok(output) = cmd.output() {
+                            if output.status.success() {
+                                let text = String::from_utf8_lossy(&output.stdout);
+                                let last = text.lines().last().unwrap_or("").trim();
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(last) {
+                                    if let Some(v) = json.get("version").and_then(|v| v.as_str()) {
+                                        if !v.is_empty() { target = v.to_string(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match install_kernel(&handle, &target) {
                         Ok(()) => {
                             let _ = handle.emit("update-status", "done");
                         }

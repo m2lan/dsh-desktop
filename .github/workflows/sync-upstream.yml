@@ -22,7 +22,10 @@ jobs:
         id: npm
         run: |
           JSON=$(node scripts/check-upstream.mjs)
+          echo "JSON=$JSON"
           echo "version=$(echo "$JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')" >> "$GITHUB_OUTPUT"
+          echo "latest=$(echo "$JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).latest))')" >> "$GITHUB_OUTPUT"
+          echo "next=$(echo "$JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).next))')" >> "$GITHUB_OUTPUT"
 
       - name: Compare with baseline
         id: compare
