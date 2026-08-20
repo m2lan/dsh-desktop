@@ -522,8 +522,9 @@ pub fn run() {
                         return;
                     }
                     // Notify only — user clicks "Apply Update" to actually install
-                    let _ = handle.emit("update-status", format!("update available: {} -> {}", current.unwrap_or_default(), latest));
-                    let _ = handle.emit("kernel-log", format!("[dsh-desktop] update available: {} -> {} (click Apply Update)", current.unwrap_or_default(), latest));
+                    let cur = current.clone().unwrap_or_default();
+                    let _ = handle.emit("update-status", format!("update available: {} -> {}", cur, latest));
+                    let _ = handle.emit("kernel-log", format!("[dsh-desktop] update available: {} -> {} (click Apply Update)", cur, latest));
                 });
             } else {
                 let handle = app.handle().clone();
