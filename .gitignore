@@ -9,6 +9,8 @@ src-tauri/gen/
 # Runtime staging (portable node fetched by CI)
 runtime-staging/
 src-tauri/node-runtime/
+# Bundled kernel is baked at release time; don't commit the huge dir
+src-tauri/resources/kernel/
 
 # OS
 .DS_Store

@@ -138,6 +138,36 @@ fn installed_version(app: &AppHandle) -> Option<String> {
     std::fs::read_to_string(vf).ok().map(|s| s.trim().to_string())
 }
 
+fn bundled_kernel_version(app: &AppHandle) -> Option<String> {
+    // scripts/kernel-version.json is bundled as resource `scripts/kernel-version.json`
+    let p = scripts_dir(app).join("kernel-version.json");
+    let txt = std::fs::read_to_string(p).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    v.get("version").and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+fn bundled_kernel_dir(app: &AppHandle) -> PathBuf {
+    app.path()
+        .resource_dir()
+        .map(|r| r.join("kernel"))
+        .unwrap_or_default()
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Kernel process management
 // ---------------------------------------------------------------------------
@@ -632,77 +662,77 @@ pub fn run() {
         .setup(|app| {
             build_tray(&app.handle())?;
 
-            // Boot the kernel. If it isn't installed yet, install it first
-            // (background, with progress via `update-status` events).
-            // If it IS installed, start it immediately and auto-check for
-            // updates in the background — this is what makes
-            // "每次启动自动检查并同步更新" actually work (previously only
-            // the not-installed case triggered an install).
+            // Pinned mode: dsh-desktop version is locked to the bundled harness version.
+            // No network check on startup — the kernel that ships with the installer is the
+            // only version used. First launch copies/bundles or installs that exact version.
+            // Existing installs with a different version are also migrated offline via copy.
             if kernel_entry(&app.handle()).exists() {
+                let installed = installed_version(&app.handle());
+                let pinned = bundled_kernel_version(&app.handle());
+                if let Some(pinned_ver) = pinned.clone() {
+                    if installed.as_deref() != Some(pinned_ver.as_str()) {
+                        let handle = app.handle().clone();
+                        let _ = handle.emit("update-status", "installing");
+                        let _ = handle.emit("kernel-log", format!("[dsh-desktop] migrating kernel {} -> {} (offline)", installed.unwrap_or_else(|| "(none)".to_string()), pinned_ver));
+                        let bundled = bundled_kernel_dir(&handle);
+                        let bundled_entry = bundled.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+                        if bundled_entry.exists() {
+                            let dest = kernel_dir(&handle);
+                            let res = (|| -> Result<(), String> {
+                                // ensure kernel not running while swapping
+                                if let Some(state) = handle.try_state::<KernelState>() {
+                                    stop_kernel(&state);
+                                }
+                                // remove old, copy bundled
+                                let _ = std::fs::remove_dir_all(&dest);
+                                copy_dir_recursive(&bundled, &dest).map_err(|e| e.to_string())?;
+                                let _ = std::fs::write(dest.join(".dsh-kernel-version"), format!("{pinned_ver}\n"));
+                                Ok(())
+                            })();
+                            if res.is_ok() {
+                                let _ = handle.emit("kernel-log", "[dsh-desktop] kernel migrated from bundled resources".to_string());
+                                let _ = handle.emit("update-status", "done");
+                            } else {
+                                let _ = handle.emit("kernel-log", format!("[dsh-desktop] migrate copy failed: {}, will continue with existing", res.unwrap_err()));
+                            }
+                        } else {
+                            let _ = handle.emit("kernel-log", "[dsh-desktop] bundled kernel not found, keeping existing kernel".to_string());
+                        }
+                    }
+                }
                 let _ = start_kernel(&app.handle());
-                // Background check: only notify, do NOT auto-install.
-                // Auto-killing the kernel 2s after boot breaks history/model fetches
-                // if npm install fails (EPERM, offline) — kernel stays dead.
-                // Now we just emit an event; UI can show "update available -> click Apply".
-                let handle = app.handle().clone();
-                thread::spawn(move || {
-                    thread::sleep(Duration::from_secs(3));
-                    let script = scripts_dir(&handle).join("check-upstream.mjs");
-                    if !script.exists() {
-                        return;
-                    }
-                    let node = node_bin(&handle);
-                    let mut cmd = Command::new(&node);
-                    cmd.arg(&script);
-                    no_console(&mut cmd);
-                    let output = match cmd.output() {
-                        Ok(o) if o.status.success() => o,
-                        _ => return,
-                    };
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    let last_line = text.lines().last().unwrap_or("").trim().to_string();
-                    let json: serde_json::Value = match serde_json::from_str(&last_line) {
-                        Ok(v) => v,
-                        Err(_) => return,
-                    };
-                    let latest = json.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    if latest.is_empty() {
-                        return;
-                    }
-                    let current = installed_version(&handle);
-                    if current.as_deref() == Some(latest.as_str()) {
-                        return;
-                    }
-                    // Notify only — user clicks "Apply Update" to actually install
-                    let cur = current.clone().unwrap_or_default();
-                    let _ = handle.emit("update-status", format!("update available: {} -> {}", cur, latest));
-                    let _ = handle.emit("kernel-log", format!("[dsh-desktop] update available: {} -> {} (click Apply Update)", cur, latest));
-                });
             } else {
                 let handle = app.handle().clone();
                 thread::spawn(move || {
                     let _ = handle.emit("update-status", "installing");
-                    // For first install, ask the registry for the best version (rc.8 on `next`)
-                    // instead of hard-coded "latest" (which would be rc.7 while next=rc.8).
-                    let mut target = "latest".to_string();
-                    let script = scripts_dir(&handle).join("check-upstream.mjs");
-                    if script.exists() {
-                        let node = node_bin(&handle);
-                        let mut cmd = Command::new(&node);
-                        cmd.arg(&script);
-                        no_console(&mut cmd);
-                        if let Ok(output) = cmd.output() {
-                            if output.status.success() {
-                                let text = String::from_utf8_lossy(&output.stdout);
-                                let last = text.lines().last().unwrap_or("").trim();
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(last) {
-                                    if let Some(v) = json.get("version").and_then(|v| v.as_str()) {
-                                        if !v.is_empty() { target = v.to_string(); }
-                                    }
-                                }
+                    // 1) Prefer a pre-bundled kernel shipped as resource `kernel/` (offline install)
+                    let bundled = bundled_kernel_dir(&handle);
+                    let bundled_entry = bundled.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+                    if bundled_entry.exists() {
+                        let dest = kernel_dir(&handle);
+                        // copy dir recursively (simple, best-effort)
+                        let _ = std::fs::create_dir_all(&dest);
+                        let res = (|| -> Result<(), String> {
+                            copy_dir_recursive(&bundled, &dest).map_err(|e| e.to_string())?;
+                            // ensure version file matches bundled version
+                            if let Some(v) = bundled_kernel_version(&handle) {
+                                let _ = std::fs::write(dest.join(".dsh-kernel-version"), format!("{v}\n"));
                             }
+                            Ok(())
+                        })();
+                        if res.is_ok() {
+                            let _ = handle.emit("kernel-log", "[dsh-desktop] kernel restored from bundled resources".to_string());
+                            match start_kernel(&handle) {
+                                Ok(()) => { let _ = handle.emit("update-status", "done"); return; }
+                                Err(e) => { let _ = handle.emit("kernel-log", format!("[dsh-desktop] bundled kernel start failed: {e}, falling back to npm")); }
+                            }
+                        } else {
+                            let _ = handle.emit("kernel-log", format!("[dsh-desktop] bundled copy failed: {}, falling back to npm", res.unwrap_err()));
                         }
                     }
+                    // 2) Fallback: npm install the pinned version from scripts/kernel-version.json (no registry query)
+                    let target = bundled_kernel_version(&handle).unwrap_or_else(|| "latest".to_string());
+                    let _ = handle.emit("kernel-log", format!("[dsh-desktop] installing pinned kernel {} …", target));
                     match install_kernel(&handle, &target) {
                         Ok(()) => {
                             let _ = handle.emit("update-status", "done");

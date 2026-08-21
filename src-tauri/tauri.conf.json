@@ -43,7 +43,8 @@
     "resources": {
       "../scripts/*.mjs": "scripts/",
       "../scripts/*.json": "scripts/",
-      "node-runtime/node": "runtime/"
+      "node-runtime/node": "runtime/",
+      "resources/kernel": "kernel/"
     },
     "windows": {
       "nsis": {

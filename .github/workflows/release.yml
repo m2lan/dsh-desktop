@@ -57,6 +57,22 @@ jobs:
             exit 1
           fi
 
+      # Bake the pinned kernel into the installer so first launch is offline.
+      # The app will copy resources/kernel -> $APPDATA/com.dsh.desktop/kernel on first run;
+      # if the resource is missing it falls back to `npm install @deepseek-ai/dsh@<pinned>`.
+      - name: Bake pinned kernel (offline)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER=$(node -e "console.log(require('./scripts/kernel-version.json').version)")
+          echo "Baking @deepseek-ai/dsh@$VER into src-tauri/resources/kernel"
+          rm -rf src-tauri/resources/kernel
+          mkdir -p src-tauri/resources
+          node scripts/fetch-dsh.mjs --dir src-tauri/resources/kernel --version "$VER"
+          echo "--- baked kernel ---"
+          cat src-tauri/resources/kernel/.dsh-kernel-version
+          ls -lh src-tauri/resources/kernel/node_modules/@deepseek-ai/dsh/lib/bin.js
+
       - name: Build Tauri release bundles
         run: npm run build
 
