@@ -64,16 +64,24 @@ writeFileSync(
   JSON.stringify({ name: "dsh-kernel", private: true, version: "0.0.0" }, null, 2),
 );
 
+// Use a temp cache under staging to avoid EPERM on %APPDATA%\npm-cache (locked by antivirus/search indexer)
+// and to keep the install hermetic. Also works with portable node that has no global cache.
+import { tmpdir } from "node:os";
+const npmCache = join(tmpdir(), `dsh-npm-cache-${Date.now()}`);
+mkdirSync(npmCache, { recursive: true });
+const logLevel = process.env.npm_config_loglevel || process.env.NPM_CONFIG_LOGLEVEL || "error";
 try {
   execFileSync(
     process.execPath,
-    [npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--loglevel=error", spec],
-    { stdio: "inherit" },
+    [npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
+    { stdio: "inherit", env: { ...process.env, npm_config_cache: npmCache } },
   );
 } catch (e) {
   rmSync(staging, { recursive: true, force: true });
+  rmSync(npmCache, { recursive: true, force: true });
   fail(`npm install failed: ${e.message}`);
 }
+rmSync(npmCache, { recursive: true, force: true });
 
 // Record the exact installed version.
 const pkgPath = join(staging, "node_modules", "@deepseek-ai", "dsh", "package.json");

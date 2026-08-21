@@ -194,6 +194,7 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
     let mut cmd = Command::new(&node);
     cmd.arg(&entry)
         .arg("web")
+        .arg("--no-open")
         .arg("--port")
         .arg("0") // let the OS pick a free port
         .env("DSH_HOME", dsh_home(app))
