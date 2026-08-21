@@ -384,22 +384,81 @@ fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
         guard.url = None;
     }
 
+    // Stream fetch-dsh output line-by-line so the splash UI can show real progress
+    // (npm http fetch GET 200 ..., reify, etc.) instead of a single spinner for minutes.
     let mut cmd = Command::new(&node);
     cmd.arg(&script)
         .arg("--dir")
         .arg(kernel_dir(app))
         .arg("--version")
-        .arg(version);
+        .arg(version)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // force http-level logs so the user sees downloads; fetch-dsh.mjs respects this env
+        .env("npm_config_loglevel", "http");
     no_console(&mut cmd);
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("failed to run fetch-dsh: {e}"))?;
 
-    if !output.status.success() {
-        let msg = format!("install failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    // forward stdout
+    let app_stdout = app.clone();
+    let t_out = thread::spawn(move || {
+        if let Some(out) = stdout {
+            let reader = BufReader::new(out);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    let _ = app_stdout.emit("kernel-log", l.clone());
+                    // also surface npm progress as subtext via update-status
+                    if l.contains("http fetch") || l.contains("fetch-dsh") || l.contains("reify") {
+                        let short = if l.len() > 120 { format!("{}…", &l[..120]) } else { l };
+                        let _ = app_stdout.emit("install-progress", short);
+                    }
+                }
+            }
+        }
+    });
+    // forward stderr (npm http logs go to stderr)
+    let app_stderr = app.clone();
+    let mut stderr_buf = std::sync::Arc::new(Mutex::new(String::new()));
+    let stderr_buf_clone = stderr_buf.clone();
+    let t_err = thread::spawn(move || {
+        if let Some(err) = stderr {
+            let reader = BufReader::new(err);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    {
+                        let mut b = stderr_buf_clone.lock().unwrap();
+                        b.push_str(&l);
+                        b.push('\n');
+                        if b.len() > 8000 {
+                            let drain = b.len() - 8000;
+                            b.drain(..drain);
+                        }
+                    }
+                    let _ = app_stderr.emit("kernel-log", l.clone());
+                    if l.contains("http fetch") || l.contains("WARN") || l.contains("ERR") || l.contains("error") {
+                        let short = if l.len() > 140 { format!("{}…", &l[..140]) } else { l };
+                        let _ = app_stderr.emit("install-progress", short);
+                    }
+                }
+            }
+        }
+    });
+
+    let status = child.wait().map_err(|e| format!("failed to wait fetch-dsh: {e}"))?;
+    let _ = t_out.join();
+    let _ = t_err.join();
+
+    if !status.success() {
+        let tail = stderr_buf.lock().unwrap().clone();
+        let tail_short = tail.lines().last().unwrap_or("unknown error").to_string();
         // Try to bring the old kernel back so history/model fetches don't stay dead
         let _ = start_kernel(app);
-        return Err(msg);
+        return Err(format!("install failed (exit {}): {} -- {}", status, tail_short, tail.lines().rev().take(5).collect::<Vec<_>>().join(" | ")));
     }
     start_kernel(app)
 }

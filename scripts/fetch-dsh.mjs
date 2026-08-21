@@ -69,12 +69,13 @@ writeFileSync(
 import { tmpdir } from "node:os";
 const npmCache = join(tmpdir(), `dsh-npm-cache-${Date.now()}`);
 mkdirSync(npmCache, { recursive: true });
-const logLevel = process.env.npm_config_loglevel || process.env.NPM_CONFIG_LOGLEVEL || "error";
+let logLevel = process.env.npm_config_loglevel || process.env.NPM_CONFIG_LOGLEVEL || "http";
+if (logLevel === "error" && process.env.DSH_FETCH_VERBOSE) logLevel = "verbose";
 try {
   execFileSync(
     process.execPath,
     [npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
-    { stdio: "inherit", env: { ...process.env, npm_config_cache: npmCache } },
+    { stdio: "inherit", env: { ...process.env, npm_config_cache: npmCache, npm_config_loglevel: logLevel } },
   );
 } catch (e) {
   rmSync(staging, { recursive: true, force: true });

@@ -22,16 +22,23 @@ function setState(text, subtext, showSpinner, showRetry, retryLabel) {
   else retry.textContent = "重试";
 }
 
+let installing = false;
+let lastProgress = "";
+
 listen("update-status", (e) => {
   const p = String(e.payload);
   if (p === "installing") {
     pendingUpdateVersion = null;
+    installing = true;
+    lastProgress = "";
     setState("正在安装 DeepSeek Harness 内核…", "首次运行需要联网下载，可能需要几分钟（2-4分钟）", true, false);
   } else if (p === "done") {
     pendingUpdateVersion = null;
+    installing = false;
     setState("内核已就绪", "正在启动…", true, false);
   } else if (p.startsWith("error:")) {
     pendingUpdateVersion = null;
+    installing = false;
     setState("启动失败", p.slice(6), false, true, "重试");
   } else if (p.startsWith("update available:")) {
     // e.g. "update available: 0.1.0-rc.7 -> 0.1.0-rc.8"
@@ -46,6 +53,25 @@ listen("update-status", (e) => {
     setState("发现新版本", p, false, true, "查看更新");
   } else {
     setState("处理中…", p, true, false);
+  }
+});
+
+// Real-time progress from Rust's install_kernel streaming (npm http fetch, reify, etc.)
+listen("install-progress", (e) => {
+  if (!installing) return;
+  const p = String(e.payload).trim();
+  if (!p) return;
+  lastProgress = p;
+  // keep title, update subtext with latest npm line
+  sub.textContent = p.length > 120 ? p.slice(0, 120) + "…" : p;
+});
+
+listen("kernel-log", (e) => {
+  if (!installing) return;
+  const p = String(e.payload).trim();
+  // prefer install-progress but fallback to kernel-log for fetch-dsh lines
+  if (p.includes("fetch-dsh") || p.includes("kernel") || p.includes("http fetch")) {
+    sub.textContent = p.length > 120 ? p.slice(0, 120) + "…" : p;
   }
 });
 
