@@ -71,11 +71,14 @@ const npmCache = join(tmpdir(), `dsh-npm-cache-${Date.now()}`);
 mkdirSync(npmCache, { recursive: true });
 let logLevel = process.env.npm_config_loglevel || process.env.NPM_CONFIG_LOGLEVEL || "http";
 if (logLevel === "error" && process.env.DSH_FETCH_VERBOSE) logLevel = "verbose";
+// CI OOM fix: ensure the npm child also gets a larger heap (hosted runner defaults to ~2GB)
+const extraNodeOpts = process.env.NODE_OPTIONS || "";
+const nodeOpts = extraNodeOpts.includes("max-old-space-size") ? extraNodeOpts : `${extraNodeOpts} --max-old-space-size=4096`.trim();
 try {
   execFileSync(
     process.execPath,
-    [npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
-    { stdio: "inherit", env: { ...process.env, npm_config_cache: npmCache, npm_config_loglevel: logLevel } },
+    ["--max-old-space-size=4096", npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
+    { stdio: "inherit", env: { ...process.env, npm_config_cache: npmCache, npm_config_loglevel: logLevel, NODE_OPTIONS: nodeOpts } },
   );
 } catch (e) {
   rmSync(staging, { recursive: true, force: true });

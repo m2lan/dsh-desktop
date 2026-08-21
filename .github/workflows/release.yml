@@ -61,17 +61,21 @@ jobs:
       # The app will copy resources/kernel -> $APPDATA/com.dsh.desktop/kernel on first run;
       # if the resource is missing it falls back to `npm install @deepseek-ai/dsh@<pinned>`.
       - name: Bake pinned kernel (offline)
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         shell: bash
         run: |
           set -euo pipefail
           VER=$(node -e "console.log(require('./scripts/kernel-version.json').version)")
-          echo "Baking @deepseek-ai/dsh@$VER into src-tauri/resources/kernel"
-          rm -rf src-tauri/resources/kernel
+          echo "Baking @deepseek-ai/dsh@$VER into src-tauri/resources/kernel (NODE_OPTIONS=$NODE_OPTIONS)"
+          rm -rf src-tauri/resources/kernel src-tauri/resources/kernel.staging
           mkdir -p src-tauri/resources
-          node scripts/fetch-dsh.mjs --dir src-tauri/resources/kernel --version "$VER"
+          # npm 10 on Node 22 defaults to ~2GB heap and OOMs on the 50+ dsh deps (see last run: FATAL ERROR near heap limit)
+          node --max-old-space-size=4096 scripts/fetch-dsh.mjs --dir src-tauri/resources/kernel --version "$VER"
           echo "--- baked kernel ---"
           cat src-tauri/resources/kernel/.dsh-kernel-version
           ls -lh src-tauri/resources/kernel/node_modules/@deepseek-ai/dsh/lib/bin.js
+          du -sh src-tauri/resources/kernel
 
       - name: Build Tauri release bundles
         run: npm run build
