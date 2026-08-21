@@ -78,7 +78,14 @@ jobs:
           du -sh src-tauri/resources/kernel
 
       - name: Build Tauri release bundles
-        run: npm run build
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            # AppImage via linuxdeploy fails with the baked kernel (huge resources/); deb is enough (rpm also builds via deb bundler)
+            npx tauri build --bundles deb
+          else
+            npm run build
+          fi
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4

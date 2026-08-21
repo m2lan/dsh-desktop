@@ -453,7 +453,7 @@ fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
     });
     // forward stderr (npm http logs go to stderr)
     let app_stderr = app.clone();
-    let mut stderr_buf = std::sync::Arc::new(Mutex::new(String::new()));
+    let stderr_buf = std::sync::Arc::new(Mutex::new(String::new()));
     let stderr_buf_clone = stderr_buf.clone();
     let t_err = thread::spawn(move || {
         if let Some(err) = stderr {
