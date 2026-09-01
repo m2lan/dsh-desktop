@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Tauri desktop shell for DeepSeek Harness (dsh) — shell/kernel separated, auto-updating",
   "private": true,
   "type": "module",
