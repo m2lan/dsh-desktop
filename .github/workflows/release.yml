@@ -26,9 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve pinned Node version
+        id: runtime
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./scripts/node-version.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ steps.runtime.outputs.version }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -43,7 +50,7 @@ jobs:
 
       - name: Fetch portable Node runtime
         shell: bash
-        run: node scripts/fetch-node.mjs --out src-tauri/node-runtime --version $(node -e "console.log(require('./scripts/node-version.json').version)")
+        run: node scripts/fetch-node.mjs --out src-tauri/node-runtime
 
       - name: Verify node runtime exists
         shell: bash
@@ -76,6 +83,12 @@ jobs:
           cat src-tauri/resources/kernel/.dsh-kernel-version
           ls -lh src-tauri/resources/kernel/node_modules/@deepseek-ai/dsh/lib/bin.js
           du -sh src-tauri/resources/kernel
+
+      - name: Smoke test bundled runtime and kernel
+        shell: bash
+        run: |
+          node --test scripts/startup.test.mjs
+          node scripts/smoke-kernel.mjs
 
       - name: Build Tauri release bundles
         shell: bash

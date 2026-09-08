@@ -119,3 +119,24 @@ dsh-desktop/
 ## License
 
 MIT
+
+## v0.1.14 运行时修复与发布检查
+
+内置 Node 固定在 `scripts/node-version.json`（v22.23.2），CI 的 npm 安装和最终运行时使用同一版本。
+`fetch-dsh.mjs` 会在 Windows 延迟加载仅供 POSIX 使用的 fs-ext，保留内核原有的 Windows 信号量锁；在 Linux/macOS 编译 fs-ext 原生模块。
+该兼容补丁位于 `scripts/prepare-kernel.mjs`；升级内核后若上游代码结构变化，构建会要求重新检查补丁。
+
+本地复现 GitHub 发布前检查：
+
+```sh
+node scripts/fetch-node.mjs --out src-tauri/node-runtime
+# Windows（macOS/Linux 将 node.exe 换成 bin/node）
+src-tauri/node-runtime/node/node.exe scripts/fetch-dsh.mjs --dir src-tauri/resources/kernel --version 0.1.3-alpha.2
+node --test scripts/startup.test.mjs
+node scripts/smoke-kernel.mjs
+```
+
+启动检查使用临时 DSH_HOME，验证内核进程存活、认证跳转和前端 HTTP 200，然后关闭测试进程。
+各平台通过检查后才构建安装包，三个平台构建成功后才发布。将修复提交后推送 `v0.1.14` 标签可触发现有 GitHub release workflow。
+升级安装会按外壳版本重新复制已修复的内核，不改动 `dsh-home` 中的用户数据。
+Windows 启动日志位于 `%APPDATA%/com.dsh.desktop/logs/kernel.log`，达到约 2 MB 时轮转，启动 URL 中的认证 token 不写入日志。

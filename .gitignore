@@ -18,3 +18,5 @@ Thumbs.db
 
 # Logs
 *.log
+# Local diagnostic captures (machine paths and temporary user homes)
+/diagnostics/

@@ -15,8 +15,9 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareKernel } from "./prepare-kernel.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -30,8 +31,9 @@ function fail(msg) {
   process.exit(1);
 }
 
-const dir = resolve(arg("--dir", ""));
-if (!dir) fail("--dir is required");
+const dirArg = arg("--dir", "");
+if (!dirArg) fail("--dir is required");
+const dir = resolve(dirArg);
 const version = arg("--version", "latest");
 
 // npm-cli.js sits next to the node binary that runs this script.
@@ -74,12 +76,22 @@ if (logLevel === "error" && process.env.DSH_FETCH_VERBOSE) logLevel = "verbose";
 // CI OOM fix: ensure the npm child also gets a larger heap (hosted runner defaults to ~2GB)
 const extraNodeOpts = process.env.NODE_OPTIONS || "";
 const nodeOpts = extraNodeOpts.includes("max-old-space-size") ? extraNodeOpts : `${extraNodeOpts} --max-old-space-size=4096`.trim();
+const installEnv = { ...process.env, PATH: `${nodeDir}${delimiter}${process.env.PATH || ""}`,
+  npm_config_cache: npmCache, npm_config_loglevel: logLevel, NODE_OPTIONS: nodeOpts };
 try {
   execFileSync(
     process.execPath,
     ["--max-old-space-size=4096", npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
-    { stdio: "inherit", env: { ...process.env, npm_config_cache: npmCache, npm_config_loglevel: logLevel, NODE_OPTIONS: nodeOpts } },
+    { stdio: "inherit", env: installEnv },
   );
+  if (process.platform !== "win32") {
+    // fs-ext ships source, not prebuilds. Build it with the same Node used to
+    // install/run the kernel; Windows uses upstream Koffi semaphore locks.
+    execFileSync(process.execPath,
+      [npmCli, "rebuild", "fs-ext", "--prefix", staging, "--ignore-scripts=false", "--cache", npmCache],
+      { stdio: "inherit", env: installEnv });
+  }
+  prepareKernel(staging);
 } catch (e) {
   rmSync(staging, { recursive: true, force: true });
   rmSync(npmCache, { recursive: true, force: true });

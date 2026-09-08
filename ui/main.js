@@ -24,6 +24,7 @@ function setState(text, subtext, showSpinner, showRetry, retryLabel) {
 
 let installing = false;
 let lastProgress = "";
+let startupDeadline = Date.now() + 60000;
 
 listen("update-status", (e) => {
   const p = String(e.payload);
@@ -35,6 +36,7 @@ listen("update-status", (e) => {
   } else if (p === "done") {
     pendingUpdateVersion = null;
     installing = false;
+    startupDeadline = Date.now() + 60000;
     setState("内核已就绪", "正在启动…", true, false);
   } else if (p.startsWith("error:")) {
     pendingUpdateVersion = null;
@@ -97,6 +99,41 @@ retry.addEventListener("click", async () => {
     }
     return;
   }
-  // Reloading the window re-runs Rust setup, which boots (or installs) the kernel again.
-  window.location.reload();
+  retry.disabled = true;
+  startupDeadline = Date.now() + 60000;
+  setState("正在重新启动内核…", "请稍候", true, false);
+  try {
+    const status = await invoke("get_status");
+    if (status.kernelInstalled) {
+      await invoke("restart_kernel");
+    } else {
+      await invoke("apply_update", { version: null });
+    }
+  } catch (err) {
+    setState("启动失败", String(err), false, true, "重试");
+  } finally {
+    retry.disabled = false;
+  }
 });
+
+// Events emitted during Rust setup can precede listener registration. Recover
+// from the backend snapshot instead of relying solely on transient events.
+async function pollStatus() {
+  try {
+    const status = await invoke("get_status");
+    if (!installing && !retry.disabled) {
+      if (status.error) {
+        setState("启动失败", status.error, false, true, "重试");
+      } else if (status.url) {
+        window.location.replace(status.url);
+        return;
+      } else if (Date.now() > startupDeadline && !pendingUpdateVersion) {
+        setState("内核启动超时", "60 秒内未连接到内核，请点击重试", false, true, "重试");
+      }
+    }
+  } catch (err) {
+    setState("无法获取启动状态", String(err), false, true, "重试");
+  }
+  setTimeout(pollStatus, 1000);
+}
+pollStatus();

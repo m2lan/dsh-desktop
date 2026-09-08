@@ -15,7 +15,7 @@
 //! from the tray kills the kernel process tree.
 
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -51,6 +51,7 @@ struct KernelState(Mutex<KernelInner>);
 struct KernelInner {
     child: Option<Child>,
     url: Option<String>,
+    error: Option<String>,
 }
 
 impl Default for KernelState {
@@ -153,6 +154,36 @@ fn bundled_kernel_dir(app: &AppHandle) -> PathBuf {
         .unwrap_or_default()
 }
 
+fn mark_kernel_shell_version(app: &AppHandle) -> Result<(), String> {
+    std::fs::write(
+        kernel_dir(app).join(".dsh-desktop-version"),
+        app.package_info().version.to_string(),
+    ).map_err(|e| e.to_string())
+}
+
+/// Keep a bounded startup log even if the splash has not registered listeners.
+fn kernel_log(app: &AppHandle, message: &str) {
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+    let _lock = LOG_LOCK.lock().unwrap();
+    // Startup URLs carry a process authentication token; omit it from disk.
+    let message = message.split("?token=").next().unwrap_or(message);
+    if let Ok(data) = app.path().app_data_dir() {
+        let dir = data.join("logs");
+        let path = dir.join("kernel.log");
+        let _ = std::fs::create_dir_all(&dir);
+        if std::fs::metadata(&path).map(|m| m.len() > 2_000_000).unwrap_or(false) {
+            let _ = std::fs::remove_file(dir.join("kernel.previous.log"));
+            let _ = std::fs::rename(&path, dir.join("kernel.previous.log"));
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            let _ = writeln!(file, "[{timestamp}] {message}");
+        }
+    }
+    let _ = app.emit("kernel-log", message);
+}
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -198,6 +229,7 @@ fn stop_kernel(state: &KernelState) {
         kill_tree(&mut child);
     }
     state.0.lock().unwrap().url = None;
+    state.0.lock().unwrap().error = None;
 }
 
 /// Spawn the dsh kernel and return immediately. The URL is emitted on the
@@ -205,7 +237,14 @@ fn stop_kernel(state: &KernelState) {
 fn start_kernel(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<KernelState>();
     {
-        let guard = state.0.lock().unwrap();
+        let mut guard = state.0.lock().unwrap();
+        // A stored Child handle does not mean that the process is still alive.
+        if let Some(child) = guard.child.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                guard.child = None;
+                guard.url = None;
+            }
+        }
         if guard.child.is_some() {
             return Ok(()); // already running
         }
@@ -213,6 +252,7 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
 
     let node = node_bin(app);
     let entry = kernel_entry(app);
+    kernel_log(app, &format!("Starting {} {} web --no-open --port 0", node.display(), entry.display()));
     if !entry.exists() {
         return Err("kernel not installed — run install/update first".to_string());
     }
@@ -237,10 +277,12 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
+    let child_id = child.id();
 
     *state.0.lock().unwrap() = KernelInner {
         child: Some(child),
         url: None,
+        error: None,
     };
 
     // Reader thread: watch stdout for the "dsh web: http://…" line.
@@ -249,12 +291,17 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             let Ok(line) = line else { break };
+            kernel_log(&app2, &format!("[stdout] {line}"));
             if let Some(rest) = line.split("dsh web: ").nth(1) {
                 let url = rest.split_whitespace().next().unwrap_or("").to_string();
-                if !url.is_empty() {
+                if url.starts_with("http://127.0.0.1:") {
                     {
                         let st = app2.state::<KernelState>();
-                        st.0.lock().unwrap().url = Some(url.clone());
+                        let mut guard = st.0.lock().unwrap();
+                        if guard.child.as_ref().map(|child| child.id()) != Some(child_id) {
+                            return; // output from a process stopped by a retry
+                        }
+                        guard.url = Some(url.clone());
                     }
                     let _ = app2.emit("kernel-url", url.clone());
                     let _ = app2.emit("kernel-status", "ready");
@@ -264,13 +311,16 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
                             let _ = win.navigate(parsed);
                         }
                     }
-                    return;
+                    // Keep draining stdout after readiness: closing the pipe can
+                    // make subsequent kernel logging fail with EPIPE.
+                    continue;
                 }
             }
-            let _ = app2.emit("kernel-log", format!("[dsh] {line}"));
         }
-        // stdout closed without a URL: kernel exited
-        let _ = app2.emit("kernel-status", "exited");
+        // Do not let a retired process overwrite a newer retry's UI state.
+        if app2.state::<KernelState>().0.lock().unwrap().child.as_ref().map(|child| child.id()) == Some(child_id) {
+            let _ = app2.emit("kernel-status", "exited");
+        }
     });
 
     // Stderr thread: forward logs.
@@ -279,7 +329,7 @@ fn start_kernel(app: &AppHandle) -> Result<(), String> {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            let _ = app3.emit("kernel-log", format!("[dsh] {line}"));
+            kernel_log(&app3, &format!("[stderr] {line}"));
         }
     });
 
@@ -298,19 +348,29 @@ struct StatusInfo {
     version: Option<String>,
     running: bool,
     url: Option<String>,
+    error: Option<String>,
     kernel_dir: String,
     dsh_home: String,
 }
 
 #[tauri::command]
 fn get_status(app: AppHandle, state: State<'_, KernelState>) -> StatusInfo {
-    let guard = state.0.lock().unwrap();
+    let mut guard = state.0.lock().unwrap();
+    // Persist process exit information so a reloaded/late splash can recover it.
+    let exit = guard.child.as_mut().and_then(|child| child.try_wait().ok().flatten());
+    if let Some(exit) = exit {
+        kernel_log(&app, &format!("Kernel exited: {exit}"));
+        guard.child = None;
+        guard.url = None;
+        guard.error = Some(format!("内核已退出（{exit}），请重试或检查内置运行时"));
+    }
     StatusInfo {
         kernel_installed: kernel_entry(&app).exists(),
         node_available: node_bin(&app).exists(),
         version: installed_version(&app),
         running: guard.child.is_some(),
         url: guard.url.clone(),
+        error: guard.error.clone(),
         kernel_dir: kernel_dir(&app).display().to_string(),
         dsh_home: dsh_home(&app).display().to_string(),
     }
@@ -412,6 +472,7 @@ fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
             kill_tree(&mut child);
         }
         guard.url = None;
+        guard.error = None;
     }
 
     // Stream fetch-dsh output line-by-line so the splash UI can show real progress
@@ -490,13 +551,15 @@ fn install_kernel(app: &AppHandle, version: &str) -> Result<(), String> {
         let _ = start_kernel(app);
         return Err(format!("install failed (exit {}): {} -- {}", status, tail_short, tail.lines().rev().take(5).collect::<Vec<_>>().join(" | ")));
     }
+    mark_kernel_shell_version(app)?;
     start_kernel(app)
 }
 
 /// Install (or upgrade) the kernel in the background, emitting `update-status`.
 #[tauri::command]
 fn apply_update(app: AppHandle, version: Option<String>) -> Result<(), String> {
-    let version = version.unwrap_or_else(|| "latest".to_string());
+    let version = version.unwrap_or_else(||
+        bundled_kernel_version(&app).unwrap_or_else(|| "latest".to_string()));
     let app2 = app.clone();
     thread::spawn(move || {
         let _ = app2.emit("update-status", "installing");
@@ -670,7 +733,12 @@ pub fn run() {
                 let installed = installed_version(&app.handle());
                 let pinned = bundled_kernel_version(&app.handle());
                 if let Some(pinned_ver) = pinned.clone() {
-                    if installed.as_deref() != Some(pinned_ver.as_str()) {
+                    let shell_version = app.package_info().version.to_string();
+                    let kernel_shell_version = std::fs::read_to_string(
+                        kernel_dir(&app.handle()).join(".dsh-desktop-version")
+                    ).unwrap_or_default();
+                    if installed.as_deref() != Some(pinned_ver.as_str())
+                        || kernel_shell_version.trim() != shell_version {
                         let handle = app.handle().clone();
                         let _ = handle.emit("update-status", "installing");
                         let _ = handle.emit("kernel-log", format!("[dsh-desktop] migrating kernel {} -> {} (offline)", installed.unwrap_or_else(|| "(none)".to_string()), pinned_ver));
@@ -687,6 +755,7 @@ pub fn run() {
                                 let _ = std::fs::remove_dir_all(&dest);
                                 copy_dir_recursive(&bundled, &dest).map_err(|e| e.to_string())?;
                                 let _ = std::fs::write(dest.join(".dsh-kernel-version"), format!("{pinned_ver}\n"));
+                                mark_kernel_shell_version(&handle)?;
                                 Ok(())
                             })();
                             if res.is_ok() {
@@ -700,7 +769,11 @@ pub fn run() {
                         }
                     }
                 }
-                let _ = start_kernel(&app.handle());
+                if let Err(error) = start_kernel(&app.handle()) {
+                    kernel_log(&app.handle(), &format!("Startup failed: {error}"));
+                    app.state::<KernelState>().0.lock().unwrap().error = Some(error.clone());
+                    let _ = app.emit("update-status", format!("error: {error}"));
+                }
             } else {
                 let handle = app.handle().clone();
                 thread::spawn(move || {
@@ -718,6 +791,7 @@ pub fn run() {
                             if let Some(v) = bundled_kernel_version(&handle) {
                                 let _ = std::fs::write(dest.join(".dsh-kernel-version"), format!("{v}\n"));
                             }
+                            mark_kernel_shell_version(&handle)?;
                             Ok(())
                         })();
                         if res.is_ok() {

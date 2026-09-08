@@ -2,14 +2,14 @@
 // fetch-node.mjs — download a portable Node.js runtime into <outDir>.
 //
 // Usage:
-//   node fetch-node.mjs --out <dir> [--version v22.17.1]
+//   node fetch-node.mjs --out <dir> [--version <version>]
 //
 // Downloads the official Node binary zip/tar for the current platform and
 // extracts it to <outDir>/node. Used by CI to bundle the runtime that the
 // shell spawns (so end users never need to install Node).
 
 import { execFileSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, rmSync, renameSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, rmSync, renameSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -27,9 +27,11 @@ function fail(msg) {
   process.exit(1);
 }
 
-const out = resolve(arg("--out", ""));
-if (!out) fail("--out is required");
-const version = arg("--version", "v22.17.1");
+const outArg = arg("--out", "");
+if (!outArg) fail("--out is required");
+const out = resolve(outArg);
+const baseline = JSON.parse(readFileSync(join(__dirname, "node-version.json"), "utf8"));
+const version = arg("--version", baseline.version);
 
 const platform = os.platform();
 const arch = os.arch();
