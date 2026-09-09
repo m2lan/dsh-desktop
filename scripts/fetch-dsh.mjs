@@ -84,12 +84,17 @@ try {
     ["--max-old-space-size=4096", npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
     { stdio: "inherit", env: installEnv },
   );
-  if (process.platform !== "win32") {
-    // fs-ext ships source, not prebuilds. Build it with the same Node used to
-    // install/run the kernel; Windows uses upstream Koffi semaphore locks.
+  // Older kernels ship the POSIX-only `fs-ext` addon as source, so it must be
+  // compiled with the same Node that will run the kernel; Windows uses upstream
+  // Koffi semaphore locks instead. Newer kernels (>= 0.1.5-alpha.1) replaced it
+  // with the prebuilt `@deepseek-ai/node-addon-system`, so there is nothing to
+  // rebuild — and `npm rebuild fs-ext` would fail on a package that isn't there.
+  if (process.platform !== "win32" && existsSync(join(staging, "node_modules", "fs-ext"))) {
     execFileSync(process.execPath,
       [npmCli, "rebuild", "fs-ext", "--prefix", staging, "--ignore-scripts=false", "--cache", npmCache],
       { stdio: "inherit", env: installEnv });
+  } else if (process.platform !== "win32") {
+    console.log("[fetch-dsh] fs-ext absent; kernel uses prebuilt @deepseek-ai/node-addon-system flock");
   }
   prepareKernel(staging);
 } catch (e) {

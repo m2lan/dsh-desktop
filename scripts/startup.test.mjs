@@ -92,3 +92,32 @@ test("Windows patch is idempotent, preserves semaphore path, and refuses unexpec
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("newer lazy flock entry needs no Windows patch and is left untouched", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-prepare-lazy-"));
+  const file = join(dir, "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js");
+  // Shape of @deepseek-ai/dsh-session-persistence-jsonl >= 0.1.5-alpha.1:
+  // the POSIX entry is lazy and Windows takes the semaphore branch.
+  const source = [
+    'import { tryLockExclusive } from "@deepseek-ai/node-addon-system/flock";',
+    'if (process.platform === "win32") { handle = await acquireLockHandleWin32(path); }',
+    "await tryLockExclusive(handle.fd);",
+  ].join("\n");
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, source);
+    prepareKernel(dir, "win32");
+    assert.equal(readFileSync(file, "utf8"), source);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("missing persistence module fails loudly instead of shipping", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-prepare-missing-"));
+  try {
+    assert.throws(() => prepareKernel(dir, "win32"), /needs review/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
