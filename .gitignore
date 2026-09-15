@@ -20,3 +20,5 @@ Thumbs.db
 *.log
 # Local diagnostic captures (machine paths and temporary user homes)
 /diagnostics/
+# Agent workspace memory (local only, machine-specific)
+.workbuddy-ai/
