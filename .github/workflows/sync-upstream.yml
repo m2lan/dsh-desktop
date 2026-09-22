@@ -36,6 +36,13 @@ jobs:
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           if [ "$CURRENT" != "$LATEST" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
 
+      # The kernel's own dependency ranges float (`^`), so the baseline bump and
+      # its lockfile must land together — otherwise fetch-dsh.mjs sees a stale
+      # lock, falls back to `npm install`, and the baked tree drifts again.
+      - name: Bump baseline and regenerate the kernel lockfile
+        if: steps.compare.outputs.changed == 'true'
+        run: node scripts/make-kernel-lock.mjs --version "${{ steps.compare.outputs.latest }}" --update-baseline
+
       - name: Create bump PR
         if: steps.compare.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v6
@@ -51,8 +58,13 @@ jobs:
             - Current baseline: `${{ steps.compare.outputs.current }}`
             - New upstream version: `${{ steps.compare.outputs.latest }}`
 
-            Merging this PR updates `scripts/kernel-version.json`. The release
-            workflow will rebuild installers embedding the new kernel.
+            This PR updates both `scripts/kernel-version.json` and the pinned
+            dependency tree in `scripts/kernel-lock/`. Merging it is enough —
+            the release workflow will rebuild installers embedding the new
+            kernel, resolved through the lock with `npm ci`.
+
+            Review the lock diff before merging: a new transitive dependency can
+            be large (e.g. `@deepseek-ai/libreoffice-kit-wasm` is 185 MiB).
 
       - name: No update available
         if: steps.compare.outputs.changed == 'false'

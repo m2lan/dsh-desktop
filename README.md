@@ -122,7 +122,7 @@ In development the shell falls back to `node` from `PATH`; packaged builds alway
 The shell is **pinned** by design: startup performs **no network check**, and the kernel baked into your installer is the kernel that runs. Upgrading is explicit:
 
 - **Tray → Check for Updates…** runs `scripts/check-upstream.mjs`, which queries the npm registry and reports the highest available version across all dist-tags (so a newer `next` beats an older `latest`). The result is shown in a native dialog.
-- **Tray → Apply Update (latest)…**, or the banner button in the splash window, runs `scripts/fetch-dsh.mjs`: `npm install --prefix <staging> @deepseek-ai/dsh@<version>`, then an **atomic swap** of the `kernel/` directory. The previous kernel is kept as `.old`, and the old kernel is brought back automatically if the install fails.
+- **Tray → Apply Update (latest)…**, or the banner button in the splash window, runs `scripts/fetch-dsh.mjs`. For a **pinned** version it installs from the committed lockfile (`npm ci --prefix <staging>`, see `scripts/kernel-lock/`) so the resolved dependency tree is reproducible; for `latest`, or when the lock does not match, it falls back to `npm install --prefix <staging> @deepseek-ai/dsh@<version>`. Either way the staged kernel then **atomically swaps** into `kernel/`. The previous kernel is kept as `.old`, and the old kernel is brought back automatically if the install fails.
 - The kernel restarts after the update. **`DSH_HOME` (profiles, plugins) is unaffected.**
 - When you install a newer **shell**, the kernel is re-synced to that shell's pinned version **offline**, by copying the bundled kernel.
 
@@ -141,7 +141,14 @@ Until then, updating the shell means installing a newer release over the old one
 
 - Upstream publishes the npm package `@deepseek-ai/dsh` (current pinned baseline: `scripts/kernel-version.json`);
 - `.github/workflows/sync-upstream.yml` **checks the npm registry daily** and opens a PR to bump `scripts/kernel-version.json` when a new version is found;
-- After merging the PR, push a `v*` tag to trigger `.github/workflows/release.yml`, which rebuilds the installers.
+- **Regenerate the kernel lockfile** with `npm run kernel:lock` and commit `scripts/kernel-lock/` alongside the version bump (see below);
+- After merging, push a `v*` tag to trigger `.github/workflows/release.yml`, which rebuilds the installers.
+
+### Why the kernel lockfile exists
+
+`@deepseek-ai/dsh` declares its own dependencies with floating `^` ranges and ships no lockfile, so two builds of the **same** kernel version days apart can resolve different transitive trees. That is not theoretical: `@deepseek-ai/dsh-office-to-pdf@0.1.6-alpha.2` added a dependency on `@deepseek-ai/libreoffice-kit`, which pulls `@deepseek-ai/libreoffice-kit-wasm` — **185 MiB** of WebAssembly — and it silently appeared in every installer from v0.1.19 onwards (v0.1.18: 54 MB exe → v0.1.19: 129 MB).
+
+`scripts/kernel-lock/` pins the entire tree for the version in `scripts/kernel-version.json`, and `scripts/fetch-dsh.mjs` consumes it with `npm ci`. `npm run kernel:lock` regenerates it (resolution only — no packages are downloaded). If the lock is missing or pins a different version, `fetch-dsh.mjs` logs that and falls back to `npm install`, so a stale lock can never break a build.
 
 ## Local development
 
@@ -158,8 +165,10 @@ npm install
 # 3. Fetch the portable Node runtime (dev works with system node; packaging needs it)
 node scripts/fetch-node.mjs --out src-tauri/node-runtime --version $(node -e "console.log(require('./scripts/node-version.json').version)")
 
-# 4. Install the dsh kernel into the user data dir (or use tray → Apply Update after launch)
-node scripts/fetch-dsh.mjs --dir "$APPDATA/com.dsh.desktop/kernel" --version latest
+# 4. Install the dsh kernel into the user data dir (or use tray → Apply Update after launch).
+#    With no --version it installs the pinned baseline from scripts/kernel-version.json,
+#    resolved through scripts/kernel-lock/ (pass --version latest to track npm's latest tag).
+node scripts/fetch-dsh.mjs --dir "$APPDATA/com.dsh.desktop/kernel"
 
 # 5. Run in development
 npm run dev
@@ -209,7 +218,8 @@ dsh-desktop/
 │   ├── tauri.conf.json       # window / bundling / updater config
 │   └── capabilities/         # Tauri permissions
 ├── scripts/
-│   ├── fetch-dsh.mjs         # kernel install/upgrade (npm + atomic swap)
+│   ├── fetch-dsh.mjs         # kernel install/upgrade (lockfile/npm + atomic swap)
+│   ├── make-kernel-lock.mjs  # regenerate scripts/kernel-lock/ for a kernel version
 │   ├── check-upstream.mjs    # query npm registry for the latest version
 │   ├── fetch-node.mjs        # download the portable Node runtime
 │   ├── gen-icons.mjs         # generate icons (zero dependencies)
@@ -217,6 +227,7 @@ dsh-desktop/
 │   ├── startup.test.mjs      # startup smoke test
 │   ├── smoke-kernel.mjs      # kernel boot smoke test
 │   ├── kernel-version.json   # kernel baseline version (upstream sync target)
+│   ├── kernel-lock/          # pinned dependency tree for that version (npm ci)
 │   └── node-version.json     # portable Node version
 └── .github/workflows/
     ├── sync-upstream.yml     # daily upstream check + auto PR

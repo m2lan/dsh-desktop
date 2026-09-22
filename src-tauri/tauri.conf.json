@@ -43,6 +43,7 @@
     "resources": {
       "../scripts/*.mjs": "scripts/",
       "../scripts/*.json": "scripts/",
+      "../scripts/kernel-lock/*.json": "scripts/kernel-lock/",
       "node-runtime/node": "runtime/",
       "resources/kernel": "kernel/"
     },

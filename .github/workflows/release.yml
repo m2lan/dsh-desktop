@@ -64,6 +64,22 @@ jobs:
             exit 1
           fi
 
+      # Reproducibility guard: warn (deliberately do not fail) when the committed
+      # lock no longer matches the baseline, because fetch-dsh.mjs then falls back
+      # to a floating `npm install` and the baked tree can drift between builds —
+      # that is how a 185 MiB dependency appeared in v0.1.19 without a version bump.
+      - name: Check kernel lock is in sync with the baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER=$(node -e "process.stdout.write(require('./scripts/kernel-version.json').version)")
+          PINNED=$(node -e "try{process.stdout.write(require('./scripts/kernel-lock/package-lock.json').packages['node_modules/@deepseek-ai/dsh'].version)}catch(e){process.stdout.write('(missing)')}")
+          if [ "$VER" != "$PINNED" ]; then
+            echo "::warning title=Kernel lock out of sync::baseline is $VER but scripts/kernel-lock pins $PINNED — run 'npm run kernel:lock' and commit the result; this build falls back to npm install"
+          else
+            echo "kernel lock matches baseline ($VER) — the npm ci path will be used"
+          fi
+
       # Bake the pinned kernel into the installer so first launch is offline.
       # The app will copy resources/kernel -> $APPDATA/com.dsh.desktop/kernel on first run;
       # if the resource is missing it falls back to `npm install @deepseek-ai/dsh@<pinned>`.

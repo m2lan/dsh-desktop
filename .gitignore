@@ -1,6 +1,8 @@
 # Node / npm
 node_modules/
-package-lock.json
+# Only the repo's own lockfile is ignored; scripts/kernel-lock/ is committed on
+# purpose so the baked dsh kernel tree is reproducible.
+/package-lock.json
 
 # Rust / Tauri
 src-tauri/target/

@@ -122,7 +122,7 @@ sudo apt install ./dsh-desktop_<版本>_amd64.deb
 外壳采用**锁定（pinned）**策略：启动时**不联网检查**，安装包里带的内核就是实际运行的内核。升级是显式动作：
 
 - **托盘 → Check for Updates…** 执行 `scripts/check-upstream.mjs`，查询 npm registry 并返回所有 dist-tags 中的最高版本（所以 `next` 比 `latest` 新时会选 `next`），结果用原生对话框展示。
-- **托盘 → Apply Update (latest)…**，或启动画面上的更新按钮，执行 `scripts/fetch-dsh.mjs`：先 `npm install --prefix <staging> @deepseek-ai/dsh@<版本>`，随后**原子替换** `kernel/` 目录。旧内核保留为 `.old`，安装失败会自动把旧内核拉起来。
+- **托盘 → Apply Update (latest)…**，或启动画面上的更新按钮，执行 `scripts/fetch-dsh.mjs`。当目标是**锁定版本**时，它从仓库内的 lockfile 安装（`npm ci --prefix <staging>`，见 `scripts/kernel-lock/`），依赖树完全可复现；目标是 `latest`、或 lockfile 版本不匹配时，回退到 `npm install --prefix <staging> @deepseek-ai/dsh@<版本>`。两种情况最后都会把 staging 目录**原子替换**进 `kernel/`。旧内核保留为 `.old`，安装失败会自动把旧内核拉起来。
 - 更新完成自动重启内核。**`DSH_HOME`（profile、插件）不受影响。**
 - 安装更新的**外壳**时，内核会按该外壳锁定的版本**离线**重新同步（直接复制内置内核）。
 
@@ -141,7 +141,14 @@ sudo apt install ./dsh-desktop_<版本>_amd64.deb
 
 - 上游发布 npm 包 `@deepseek-ai/dsh`（当前锁定版本见 `scripts/kernel-version.json`）；
 - `.github/workflows/sync-upstream.yml` **每日检查** npm registry，发现新版本自动开 PR 更新 `scripts/kernel-version.json`；
-- 合并 PR 后打 `v*` tag 触发 `.github/workflows/release.yml` 重新构建安装包。
+- **重新生成内核 lockfile**：`npm run kernel:lock`，并把 `scripts/kernel-lock/` 和版本号一起提交（见下）；
+- 合并后打 `v*` tag 触发 `.github/workflows/release.yml` 重新构建安装包。
+
+### 为什么需要内核 lockfile
+
+`@deepseek-ai/dsh` 自己的依赖用的是浮动 `^` 范围，而且它不发 lockfile，所以**同一个内核版本**隔几天构建两次，解析出的依赖树可能完全不同。这不是理论风险：`@deepseek-ai/dsh-office-to-pdf@0.1.6-alpha.2` 增加了一个对 `@deepseek-ai/libreoffice-kit` 的依赖，后者会拉进 `@deepseek-ai/libreoffice-kit-wasm`——**185 MiB** 的 WebAssembly——于是它从 v0.1.19 起静默出现在每个安装包里（exe 从 v0.1.18 的 54 MB 涨到 v0.1.19 的 129 MB）。
+
+`scripts/kernel-lock/` 把 `scripts/kernel-version.json` 对应版本的整棵依赖树钉死，`scripts/fetch-dsh.mjs` 用 `npm ci` 消费它。`npm run kernel:lock` 负责重新生成（只做解析，不下载任何包）。lockfile 缺失、或钉的版本与请求版本不一致时，`fetch-dsh.mjs` 会打印一行提示并回退到 `npm install`，所以过期的 lockfile 永远不会把构建搞挂。
 
 ## 本地开发
 
@@ -159,7 +166,9 @@ npm install
 node scripts/fetch-node.mjs --out src-tauri/node-runtime --version $(node -e "console.log(require('./scripts/node-version.json').version)")
 
 # 4. 安装 dsh 内核到用户数据目录（也可启动后走托盘 → Apply Update）
-node scripts/fetch-dsh.mjs --dir "$APPDATA/com.dsh.desktop/kernel" --version latest
+#    不传 --version 就装 scripts/kernel-version.json 里钉的基线版本，
+#    依赖树走 scripts/kernel-lock/（想跟 npm 的 latest tag 就显式传 --version latest）
+node scripts/fetch-dsh.mjs --dir "$APPDATA/com.dsh.desktop/kernel"
 
 # 5. 开发运行
 npm run dev
@@ -208,7 +217,8 @@ dsh-desktop/
 │   ├── tauri.conf.json       # 窗口/打包/更新器配置
 │   └── capabilities/         # Tauri 权限
 ├── scripts/
-│   ├── fetch-dsh.mjs         # 内核安装/升级（npm + 原子替换）
+│   ├── fetch-dsh.mjs         # 内核安装/升级（lockfile/npm + 原子替换）
+│   ├── make-kernel-lock.mjs  # 为指定内核版本重新生成 scripts/kernel-lock/
 │   ├── check-upstream.mjs    # 查询 npm registry 最新版
 │   ├── fetch-node.mjs        # 下载便携 Node 运行时
 │   ├── gen-icons.mjs         # 生成图标（零依赖）
@@ -216,6 +226,7 @@ dsh-desktop/
 │   ├── startup.test.mjs      # 启动冒烟测试
 │   ├── smoke-kernel.mjs      # 内核启动冒烟测试
 │   ├── kernel-version.json   # 内核锁定版本（上游同步目标）
+│   ├── kernel-lock/          # 该版本钉死的依赖树（供 npm ci 使用）
 │   └── node-version.json     # 便携 Node 版本
 └── .github/workflows/
     ├── sync-upstream.yml     # 每日上游检查 + 自动 PR

@@ -14,7 +14,7 @@
 // they are never touched by this swap.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareKernel } from "./prepare-kernel.mjs";
@@ -34,7 +34,21 @@ function fail(msg) {
 const dirArg = arg("--dir", "");
 if (!dirArg) fail("--dir is required");
 const dir = resolve(dirArg);
-const version = arg("--version", "latest");
+
+// Default to the pinned baseline in scripts/kernel-version.json rather than
+// `latest`: an accidental bare `node fetch-dsh.mjs --dir …` should reproduce the
+// kernel this repo ships, not silently pull whatever npm's `latest` tag points
+// at today. Pass `--version latest` explicitly to opt into that.
+function pinnedVersion() {
+  try {
+    const v = JSON.parse(readFileSync(join(__dirname, "kernel-version.json"), "utf8")).version;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch (e) {
+    console.warn(`[fetch-dsh] could not read kernel-version.json (${e.message})`);
+  }
+  return "latest";
+}
+const version = arg("--version", null) || pinnedVersion();
 
 // npm-cli.js sits next to the node binary that runs this script.
 const nodeDir = dirname(process.execPath);
@@ -55,16 +69,49 @@ const spec = version === "latest" ? "@deepseek-ai/dsh@latest" : `@deepseek-ai/ds
 const staging = `${dir}.staging`;
 const backup = `${dir}.old`;
 
-console.log(`[fetch-dsh] installing ${spec} into ${dir}`);
+// Reproducible installs: scripts/kernel-lock/ pins the FULL dependency tree for
+// the version currently in scripts/kernel-version.json (regenerate it with
+// `node scripts/make-kernel-lock.mjs` whenever the kernel version changes).
+// Without it, the kernel's floating `^` ranges mean two builds of the SAME
+// kernel version can resolve different transitive trees — that is how
+// @deepseek-ai/libreoffice-kit-wasm (185 MiB) silently appeared in every
+// installer from v0.1.19 onwards.
+const lockDir = join(__dirname, "kernel-lock");
+const lockPkg = join(lockDir, "package.json");
+const lockJson = join(lockDir, "package-lock.json");
+let useLock = false;
+if (version !== "latest" && existsSync(lockPkg) && existsSync(lockJson)) {
+  try {
+    const pinned = JSON.parse(readFileSync(lockJson, "utf8"))
+      .packages?.["node_modules/@deepseek-ai/dsh"]?.version;
+    useLock = pinned === version;
+    if (!useLock) {
+      console.log(`[fetch-dsh] kernel lock pins ${pinned ?? "nothing"} but ${version} was requested — falling back to npm install`);
+    }
+  } catch (e) {
+    console.log(`[fetch-dsh] kernel lock unreadable (${e.message}) — falling back to npm install`);
+  }
+}
+
+console.log(useLock
+  ? `[fetch-dsh] installing ${spec} into ${dir} from the committed kernel lock (npm ci)`
+  : `[fetch-dsh] installing ${spec} into ${dir}`);
 
 // Clean any leftovers, then stage.
 rmSync(staging, { recursive: true, force: true });
 rmSync(backup, { recursive: true, force: true });
 mkdirSync(staging, { recursive: true });
-writeFileSync(
-  join(staging, "package.json"),
-  JSON.stringify({ name: "dsh-kernel", private: true, version: "0.0.0" }, null, 2),
-);
+if (useLock) {
+  // npm ci requires package.json and package-lock.json to agree, so both come
+  // from the lock directory as a pair.
+  cpSync(lockPkg, join(staging, "package.json"));
+  cpSync(lockJson, join(staging, "package-lock.json"));
+} else {
+  writeFileSync(
+    join(staging, "package.json"),
+    JSON.stringify({ name: "dsh-kernel", private: true, version: "0.0.0" }, null, 2),
+  );
+}
 
 // Use a temp cache under staging to avoid EPERM on %APPDATA%\npm-cache (locked by antivirus/search indexer)
 // and to keep the install hermetic. Also works with portable node that has no global cache.
@@ -78,10 +125,14 @@ const extraNodeOpts = process.env.NODE_OPTIONS || "";
 const nodeOpts = extraNodeOpts.includes("max-old-space-size") ? extraNodeOpts : `${extraNodeOpts} --max-old-space-size=4096`.trim();
 const installEnv = { ...process.env, PATH: `${nodeDir}${delimiter}${process.env.PATH || ""}`,
   npm_config_cache: npmCache, npm_config_loglevel: logLevel, NODE_OPTIONS: nodeOpts };
+const commonNpmArgs = ["--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache];
+const installArgs = useLock
+  ? ["ci", ...commonNpmArgs]
+  : ["install", ...commonNpmArgs, spec];
 try {
   execFileSync(
     process.execPath,
-    ["--max-old-space-size=4096", npmCli, "install", "--prefix", staging, "--no-audit", "--no-fund", "--ignore-scripts", `--loglevel=${logLevel}`, "--cache", npmCache, spec],
+    ["--max-old-space-size=4096", npmCli, ...installArgs],
     { stdio: "inherit", env: installEnv },
   );
   // Older kernels ship the POSIX-only `fs-ext` addon as source, so it must be
