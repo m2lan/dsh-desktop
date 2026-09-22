@@ -193,14 +193,33 @@ jobs:
           # took 20+ minutes). Installers live at:
           #   bundle/nsis/*.exe, bundle/msi/*.msi, bundle/dmg/*.dmg,
           #   bundle/deb/*.deb, bundle/rpm/*.rpm, bundle/appimage/*.AppImage
+          #
+          # Requiring the productName prefix is what keeps the junk out. Matching
+          # on extension alone also picked up the deb's own payload
+          # (data.tar.gz ~184 MB, control.tar.gz) and the NSIS helper
+          # (OpenConsole.exe), which added ~185 MB of duplicates to every release
+          # (v0.1.19/v0.1.20 shipped 7 assets, only 4 of them installers).
+          # Every Tauri bundle is named after productName, so `dsh-desktop*`
+          # matches all real installers on all three platforms.
           files=()
           while IFS= read -r -d '' f; do
             files+=("$f")
           done < <(find artifacts -type f \
+            -name 'dsh-desktop*' \
             \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \
                -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
                -o -name '*.tar.gz' \) \
             -not -path '*/.app/*' -print0)
+
+          # Surface anything deliberately skipped, so a future bundler change
+          # cannot silently drop a real installer.
+          while IFS= read -r -d '' f; do
+            echo "skipping (not an installer): $f"
+          done < <(find artifacts -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+               -o -name '*.tar.gz' \) \
+            -not -name 'dsh-desktop*' -not -path '*/.app/*' -print0)
 
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::No installer files matched under artifacts/ — nothing to upload." >&2
